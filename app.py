@@ -5,14 +5,14 @@ import urllib.parse
 from datetime import datetime, timezone
 
 # ==========================================
-# ⚙️ CONFIGURACIÓN SEGURA (Lectura de Secrets)
+# ⚙️ CONFIGURACIÓN SEGURA
 # ==========================================
 try:
     TN_TOKEN = st.secrets["TN_TOKEN"]
     TN_ID = st.secrets["TN_ID"]
     ARIA_KEY = st.secrets["ARIA_KEY"]
 except FileNotFoundError:
-    st.error("⚠️ ERROR CRÍTICO: No se configuraron las claves secretas (Secrets) en el panel de Streamlit.")
+    st.error("⚠️ ERROR CRÍTICO: No se configuraron las claves secretas (Secrets).")
     st.stop()
 except KeyError as e:
     st.error(f"⚠️ FALTA UNA CLAVE: No encontré {e} en los Secrets.")
@@ -27,7 +27,13 @@ TAG_ESPERA = "#ESPERANDO_DIFERENCIA"
 CUOTAS_A_GENERAR = 3
 
 # ==========================================
-# 🔌 FUNCIONES DE CONEXIÓN
+# 🧠 MEMORIA DE SESIÓN (Para recordar IDs)
+# ==========================================
+if 'clientes_identificados' not in st.session_state:
+    st.session_state['clientes_identificados'] = {}
+
+# ==========================================
+# 🔌 FUNCIONES
 # ==========================================
 def consultar_api_aria(endpoint):
     headers = {"x-api-key": ARIA_KEY, "Content-Type": "application/json"}
@@ -88,15 +94,10 @@ def cargar_deuda_aria(id_cliente, monto_total, orden_id, lista_productos):
     except Exception as e: 
         return False, str(e)
 
-# ==========================================
-# 🧠 UTILIDADES INTELIGENTES (Buscador Mejorado)
-# ==========================================
 def buscar_cliente(nombre, dni, nota):
-    # --- 1. LIMPIEZA DE DATOS ---
     dni_limpio = str(dni).replace(".", "").replace(" ", "").strip()
     nombre_limpio = nombre.strip().lower()
     
-    # --- ESTRATEGIA A: BÚSQUEDA POR DNI (La más exacta) ---
     if dni_limpio and len(dni_limpio) > 5:
         res = consultar_api_aria(f"clientes?q={dni_limpio}")
         for c in res:
@@ -104,18 +105,15 @@ def buscar_cliente(nombre, dni, nota):
             if dni_aria == dni_limpio:
                 return c, "✅ Encontrado por DNI (Tiendanube)"
 
-    # --- ESTRATEGIA B: BÚSQUEDA POR ID EN NOTA (Si el cliente lo escribió) ---
     match = re.search(r'\b\d{3,6}\b', str(nota))
     if match:
         posible_id = match.group()
         res = consultar_api_aria(f"cliente/{posible_id}")
         if res and isinstance(res, list) and len(res) > 0:
             apellido_aria = res[0].get('cliente_apellido', '').lower()
-            # Chequeo de seguridad simple: que el apellido coincida un poco
             if apellido_aria in nombre_limpio:
                 return res[0], f"✅ Encontrado por ID en Nota ({posible_id})"
 
-    # --- ESTRATEGIA C: BÚSQUEDA POR APELLIDO (El último recurso) ---
     partes_nombre = nombre.split()
     if len(partes_nombre) >= 1:
         apellido = partes_nombre[-1].lower() 
@@ -124,8 +122,6 @@ def buscar_cliente(nombre, dni, nota):
             for c in res:
                 nombre_aria = c.get('cliente_nombre', '').lower()
                 apellido_aria_full = c.get('cliente_apellido', '').lower()
-                
-                # Cruzamos datos para evitar falsos positivos
                 if apellido_aria_full in nombre_limpio:
                     return c, "⚠️ Coincidencia por Apellido (Verificar DNI)"
 
@@ -138,21 +134,19 @@ def extraer_productos(pedido):
     return ", ".join(lista)
 
 # ==========================================
-# 🖥️ INTERFAZ WEB (STREAMLIT)
+# 🖥️ INTERFAZ WEB
 # ==========================================
 
 st.set_page_config(page_title="Robot Cobranzas SSS", page_icon="🤖", layout="wide")
 
 st.title("🤖 SSServicios - Robot de Cobranzas")
 
-# --- SIDEBAR (Menú Lateral) ---
 st.sidebar.header("Panel de Control")
 opcion = st.sidebar.radio("Ver:", ["Nuevos (Abiertos)", "Pendientes (Seguimiento)"])
 
 if st.sidebar.button("🔄 Actualizar Lista"):
     st.rerun()
 
-# --- LÓGICA PRINCIPAL ---
 modo_pendientes = opcion == "Pendientes (Seguimiento)"
 estado_api = "any" if modo_pendientes else "open"
 
@@ -167,10 +161,9 @@ else:
         nota = p.get('owner_note') or ""
         es_espera = TAG_ESPERA in nota
         
-        # --- FILTRADO VISUAL ---
         if modo_pendientes and es_espera:
             pedidos_filtrados.append(p)
-        elif not modo_pendientes and not es_espera: # <--- AQUI ESTABA EL ERROR, YA CORREGIDO
+        elif not modo_pendientes and not es_espera:
             pedidos_filtrados.append(p)
 
     st.success(f"Se encontraron {len(pedidos_filtrados)} pedidos en esta bandeja.")
@@ -184,7 +177,17 @@ else:
         es_manual = 'custom' in metodo or 'convenir' in metodo
         prod_str = extraer_productos(p)
 
-        with st.expander(f"🛒 #{id_p} | {nombre} | ${total:,.0f}", expanded=True):
+        # --- LÓGICA DEL TÍTULO DINÁMICO ---
+        # Verificamos si ya "recordamos" el ID de este cliente en esta sesión
+        id_memoria = st.session_state['clientes_identificados'].get(id_p)
+        
+        if id_memoria:
+            # Si lo recordamos, lo mostramos en el título
+            titulo_tarjeta = f"🛒 #{id_p} | {nombre} | 🆔 CL: {id_memoria} | ${total:,.0f}"
+        else:
+            titulo_tarjeta = f"🛒 #{id_p} | {nombre} | ${total:,.0f}"
+
+        with st.expander(titulo_tarjeta, expanded=True):
             
             if not es_manual and not modo_pendientes:
                 st.warning(f"⚠️ Pago: '{metodo}'. El robot suele ignorar esto por seguridad.")
@@ -197,27 +200,30 @@ else:
             
             with col2:
                 # Botón de Análisis
-                if st.button(f"🔍 Analizar Cliente en ARIA", key=f"btn_{id_p}"):
+                if st.button(f"🔍 Analizar Cliente", key=f"btn_{id_p}"):
                     
-                    # BUSQUEDA INTELIGENTE
                     cliente_aria, metodo_hallazgo = buscar_cliente(nombre, p['customer'].get('identification'), nota)
                     
                     if not cliente_aria:
-                        st.error("❌ Cliente no encontrado en ARIA (Ni por DNI, ni Nota, ni Apellido).")
+                        st.error("❌ Cliente no encontrado en ARIA.")
                     else:
                         id_aria = cliente_aria.get('cliente_id')
+                        # --- GUARDAMOS EN MEMORIA ---
+                        st.session_state['clientes_identificados'][id_p] = id_aria
+                        
                         cupo = float(cliente_aria.get('clienteScoringFinanciable', 0))
                         saldo = float(cliente_aria.get('cliente_saldo', 0))
                         
                         st.info(f"{metodo_hallazgo}")
-                        st.info(f"✅ Cliente: **{id_aria}** | Cupo: **${cupo:,.0f}** | Saldo: ${saldo:,.0f}")
+                        st.success(f"✅ CLIENTE: **{id_aria}**") 
+                        st.info(f"💰 Cupo: **${cupo:,.0f}** | Saldo: ${saldo:,.0f}")
                         
                         if saldo > 0:
                             st.error("⛔ RECHAZADO: Tiene deuda vigente.")
                         elif total <= cupo:
                             st.success("🚀 APROBADO: Tiene cupo suficiente.")
                             
-                            if st.button(f"💸 COBRAR AHORA (Generar Deuda)", key=f"cobrar_{id_p}"):
+                            if st.button(f"💸 COBRAR AHORA", key=f"cobrar_{id_p}"):
                                 ok, msg = cargar_deuda_aria(id_aria, total, id_p, prod_str)
                                 if ok:
                                     st.toast("✅ ¡Cobrado exitosamente!", icon="🎉")
@@ -231,11 +237,9 @@ else:
                         else:
                             dif = total - cupo
                             st.warning(f"⚠️ FALTA SALDO: ${dif:,.0f}")
-                            
                             telefono = p['customer'].get('phone') or p['billing_address'].get('phone')
-                            msj_wa = f"Hola {nombre}, para poder procesar el pedido te pedimos que abones por transferencia la diferencia entre el cupo disponible de tu cuenta y el valor de la compra ${dif:,.0f} para tu pedido #{id_p}."
+                            msj_wa = f"Hola {nombre}, falta abonar ${dif:,.0f} para tu pedido #{id_p}."
                             link_wa = f"https://wa.me/{telefono}?text={urllib.parse.quote(msj_wa)}"
-                            
                             st.markdown(f"[📲 Enviar WhatsApp]({link_wa})")
                             
                             if not modo_pendientes:
@@ -243,6 +247,6 @@ else:
                                     actualizar_nota(id_p, nota, TAG_ESPERA)
                                     st.rerun()
                             else:
-                                if st.button("🧹 Ya pagó manual (Borrar Etiqueta)", key=f"clean_{id_p}"):
+                                if st.button("🧹 Ya pagó (Borrar)", key=f"clean_{id_p}"):
                                     eliminar_etiqueta(id_p, nota)
                                     st.rerun()
