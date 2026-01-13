@@ -94,42 +94,86 @@ def cargar_deuda_aria(id_cliente, monto_total, orden_id, lista_productos):
     except Exception as e: 
         return False, str(e)
 
-def buscar_cliente(nombre, dni, nota):
-    dni_limpio = str(dni).replace(".", "").replace(" ", "").strip()
-    nombre_limpio = nombre.strip().lower()
-    
-    # 1. Por DNI
-    if dni_limpio and len(dni_limpio) > 5:
-        res = consultar_api_aria(f"clientes?q={dni_limpio}")
-        for c in res:
-            dni_aria = str(c.get('cliente_dnicuit','')).replace(".","").strip()
-            if dni_aria == dni_limpio:
-                return c, "✅ Encontrado por DNI (Tiendanube)"
+# --- 🧠 INTELIGENCIA DE COINCIDENCIA ---
+def hay_coincidencia_palabras(texto_aria, texto_tn):
+    """
+    Compara palabras sueltas. Si hay intersección, devuelve True.
+    """
+    if not texto_aria or not texto_tn: return False
+    palabras_aria = set(texto_aria.lower().replace(".","").replace(",","").split())
+    palabras_tn = set(texto_tn.lower().replace(".","").replace(",","").split())
+    palabras_aria = {p for p in palabras_aria if len(p) > 2}
+    palabras_tn = {p for p in palabras_tn if len(p) > 2}
+    return len(palabras_aria.intersection(palabras_tn)) > 0
 
-    # 2. Por ID en Nota
-    match = re.search(r'\b\d{3,6}\b', str(nota))
+def buscar_cliente(nombre_tn, dni_tn, nota_tn):
+    dni_tn_limpio = str(dni_tn).replace(".", "").replace(" ", "").strip()
+    nombre_tn_limpio = nombre_tn.strip().lower()
+    
+    # =========================================================================
+    # 🥇 PASO 1: BUSCAR POR ID EN NOTA (El Rey)
+    # =========================================================================
+    match = re.search(r'\b\d{3,6}\b', str(nota_tn))
     if match:
         posible_id = match.group()
         res = consultar_api_aria(f"cliente/{posible_id}")
+        
         if res and isinstance(res, list) and len(res) > 0:
-            apellido_aria = res[0].get('cliente_apellido', '').lower()
-            if apellido_aria in nombre_limpio:
-                return res[0], f"✅ Encontrado por ID en Nota ({posible_id})"
+            cliente = res[0]
+            
+            # DATOS DE ARIA
+            dni_aria = str(cliente.get('cliente_dnicuit','')).replace(".","").strip()
+            apellido_aria = cliente.get('cliente_apellido', '')
+            nombre_aria = cliente.get('cliente_nombre', '')
+            nombre_completo_aria = f"{nombre_aria} {apellido_aria}"
+            
+            # 1.1 VALIDAMOS DNI
+            match_dni = (dni_aria == dni_tn_limpio)
+            
+            # 1.2 VALIDAMOS NOMBRE (Palabras clave)
+            match_nombre = hay_coincidencia_palabras(nombre_completo_aria, nombre_tn_limpio)
+            
+            # DECISIÓN
+            if match_dni:
+                 return cliente, f"✅ ID {posible_id} confirmado por DNI"
+            elif match_nombre:
+                 return cliente, f"✅ ID {posible_id} confirmado por Nombre"
+            else:
+                 # ID Existe pero no cuadra con nada
+                 return cliente, f"⚠️ ID {posible_id} en Nota, pero Nombre/DNI no coinciden ({apellido_aria})"
 
-    # 3. Por Apellido (CON VALIDACIÓN DE ID)
-    partes_nombre = nombre.split()
+    # =========================================================================
+    # 🥈 PASO 2: BUSCAR POR DNI (Si ID falló o no existe)
+    # =========================================================================
+    if dni_tn_limpio and len(dni_tn_limpio) > 5:
+        res = consultar_api_aria(f"clientes?q={dni_tn_limpio}")
+        for c in res:
+            dni_aria = str(c.get('cliente_dnicuit','')).replace(".","").strip()
+            if dni_aria == dni_tn_limpio:
+                # Si encontramos por DNI, verificamos nombre solo por seguridad visual
+                nombre_aria_full = f"{c.get('cliente_nombre','')} {c.get('cliente_apellido','')}"
+                if hay_coincidencia_palabras(nombre_aria_full, nombre_tn_limpio):
+                     return c, "✅ Encontrado por DNI y Validado por Nombre"
+                else:
+                     return c, "✅ Encontrado por DNI (Nombre diferente, revisar)"
+
+    # =========================================================================
+    # 🥉 PASO 3: BUSCAR POR APELLIDO (El último recurso)
+    # =========================================================================
+    partes_nombre = nombre_tn.split()
     if len(partes_nombre) >= 1:
-        apellido = partes_nombre[-1].lower() 
-        if len(apellido) > 3: 
-            res = consultar_api_aria(f"clientes?q={apellido}")
+        apellido_tn = partes_nombre[-1].lower() 
+        if len(apellido_tn) > 3: 
+            res = consultar_api_aria(f"clientes?q={apellido_tn}")
             for c in res:
-                nombre_aria = c.get('cliente_nombre', '').lower()
-                apellido_aria_full = c.get('cliente_apellido', '').lower()
-                id_check = c.get('cliente_id')
+                # Solo nos sirven los que tienen ID
+                if not c.get('cliente_id'): continue
                 
-                # Solo devolvemos si tiene ID
-                if apellido_aria_full in nombre_limpio and id_check:
-                    return c, "⚠️ Coincidencia por Apellido (Verificar DNI)"
+                nombre_aria_full = f"{c.get('cliente_nombre','')} {c.get('cliente_apellido','')}"
+                
+                # Coincidencia fuerte de nombre
+                if hay_coincidencia_palabras(nombre_aria_full, nombre_tn_limpio):
+                     return c, "⚠️ Coincidencia por Nombre/Apellido (Verificar DNI)"
 
     return None, None
 
@@ -195,7 +239,6 @@ else:
                 st.write(f"**Nota:** {nota}")
             
             with col2:
-                # Control de apertura del panel
                 mostrar_analisis = False
                 
                 if st.button(f"🔍 Analizar Cliente", key=f"btn_{id_p}"):
@@ -205,44 +248,56 @@ else:
                     mostrar_analisis = True
 
                 if mostrar_analisis:
-                    # 1. INTENTO AUTOMÁTICO
                     cliente_aria, metodo_hallazgo = buscar_cliente(nombre, p['customer'].get('identification'), nota)
                     
-                    # 2. SI FALLA EL AUTOMÁTICO -> OPCIÓN MANUAL
                     if not cliente_aria:
                         st.error("❌ Cliente no encontrado automáticamente.")
                         
                         st.markdown("---")
                         st.write("🕵️ **Opción Manual:**")
                         col_m1, col_m2 = st.columns([2,1])
-                        
                         with col_m1:
                             id_manual = st.text_input("Ingresar Nro Cliente ARIA:", key=f"input_man_{id_p}")
-                        
                         with col_m2:
                             if st.button("Buscar Manual", key=f"btn_man_{id_p}"):
-                                # Buscamos por ID específico
                                 res = consultar_api_aria(f"cliente/{id_manual}")
                                 if res and isinstance(res, list) and len(res) > 0 and res[0].get('cliente_id'):
-                                    # ¡BINGO! Sobreescribimos la variable cliente_aria con el manual
-                                    cliente_aria = res[0]
-                                    metodo_hallazgo = f"✅ Encontrado Manualmente (ID: {id_manual})"
-                                    st.toast("Cliente Encontrado Manualmente", icon="😎")
-                                    # Forzamos recarga para que el código de abajo lo procese limpio
-                                    # (Es un truco para no duplicar código)
-                                    # Pero como Streamlit es lineal, necesitamos que 'cliente_aria' persista?
-                                    # No, en este ciclo 'cliente_aria' ya tiene datos.
-                                    pass 
+                                    cliente_manual = res[0]
+                                    id_aria_m = cliente_manual.get('cliente_id')
+                                    cupo_m = float(cliente_manual.get('clienteScoringFinanciable', 0))
+                                    saldo_m = float(cliente_manual.get('cliente_saldo', 0))
+                                    
+                                    st.success(f"✅ Encontrado Manualmente: {id_aria_m}")
+                                    st.info(f"💰 Cupo: **${cupo_m:,.0f}** | Saldo: ${saldo_m:,.0f}")
+                                    
+                                    if saldo_m > 0:
+                                        st.error("⛔ RECHAZADO: Tiene deuda vigente.")
+                                    elif total <= cupo_m:
+                                        st.success("🚀 APROBADO: Tiene cupo suficiente.")
+                                        if st.button(f"💸 COBRAR MANUALMENTE", key=f"cobrar_man_{id_p}"):
+                                            ok, msg = cargar_deuda_aria(id_aria_m, total, id_p, prod_str)
+                                            if ok:
+                                                st.toast("✅ ¡Cobrado exitosamente!", icon="🎉")
+                                                del st.session_state['analisis_activo'][id_p]
+                                                if modo_pendientes:
+                                                    eliminar_etiqueta(id_p, nota)
+                                                st.rerun()
+                                            else:
+                                                st.error(f"Fallo Aria: {msg}")
                                 else:
                                     st.error("❌ Ese ID no existe en Aria.")
 
-                    # 3. SI TENEMOS CLIENTE (Ya sea Auto o Manual en este mismo ciclo)
                     if cliente_aria:
                         id_aria = cliente_aria.get('cliente_id')
                         cupo = float(cliente_aria.get('clienteScoringFinanciable', 0))
                         saldo = float(cliente_aria.get('cliente_saldo', 0))
                         
-                        st.info(f"{metodo_hallazgo}")
+                        # ALERTA AMARILLA
+                        if "⚠️" in metodo_hallazgo:
+                            st.warning(f"{metodo_hallazgo}")
+                        else:
+                            st.info(f"{metodo_hallazgo}")
+
                         st.success(f"🆔 Cliente: **{id_aria}**")
                         st.info(f"💰 Cupo: **${cupo:,.0f}** | Saldo: ${saldo:,.0f}")
                         
@@ -250,7 +305,6 @@ else:
                             st.error("⛔ RECHAZADO: Tiene deuda vigente.")
                         elif total <= cupo:
                             st.success("🚀 APROBADO: Tiene cupo suficiente.")
-                            
                             if st.button(f"💸 COBRAR AHORA", key=f"cobrar_{id_p}"):
                                 ok, msg = cargar_deuda_aria(id_aria, total, id_p, prod_str)
                                 if ok:
@@ -274,7 +328,6 @@ else:
                                 del st.session_state['analisis_activo'][id_p]
                                 st.rerun()
 
-                    # Botón para cerrar
                     st.markdown("---")
                     if st.button("Cerrar Panel", key=f"close_{id_p}"):
                         del st.session_state['analisis_activo'][id_p]
