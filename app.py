@@ -104,77 +104,77 @@ def hay_coincidencia_palabras(texto_aria, texto_tn):
     return len(palabras_aria.intersection(palabras_tn)) > 0
 
 def buscar_cliente(nombre_tn, dni_tn, nota_tn):
+    # LIMPIEZA TOTAL
     dni_tn_limpio = str(dni_tn).replace(".", "").replace(" ", "").strip()
     nombre_tn_limpio = nombre_tn.strip().lower()
     
-    # =========================================================================
-    # 🥇 PASO 1: BUSCAR POR ID EN NOTA (El Rey)
-    # =========================================================================
+    # ---------------------------------------------------------
+    # 1. ID EN NOTA (Prioridad Máxima)
+    # ---------------------------------------------------------
     match = re.search(r'\b\d{3,6}\b', str(nota_tn))
     if match:
         posible_id = match.group()
         res = consultar_api_aria(f"cliente/{posible_id}")
-        
         if res and isinstance(res, list) and len(res) > 0:
             cliente = res[0]
+            # Extraemos datos ARIA convirtiendo TODO a string
             dni_aria = str(cliente.get('cliente_dnicuit','')).replace(".","").strip()
             apellido_aria = cliente.get('cliente_apellido', '')
             nombre_aria = cliente.get('cliente_nombre', '')
             nombre_completo_aria = f"{nombre_aria} {apellido_aria}"
             
-            # Validación doble: DNI o Nombre
+            # Comparaciones
             if dni_aria == dni_tn_limpio:
                  return cliente, f"✅ ID {posible_id} confirmado por DNI"
             elif hay_coincidencia_palabras(nombre_completo_aria, nombre_tn_limpio):
                  return cliente, f"✅ ID {posible_id} confirmado por Nombre"
             else:
-                 return cliente, f"⚠️ ID {posible_id} hallado, pero datos no coinciden."
+                 return cliente, f"⚠️ ID {posible_id} hallado, pero datos dudosos."
 
-    # =========================================================================
-    # 🥈 PASO 2: BUSCAR POR DNI DIRECTO
-    # =========================================================================
+    # ---------------------------------------------------------
+    # 2. BÚSQUEDA DE ARRASTRE (DNI + APELLIDO)
+    # ---------------------------------------------------------
+    # Si no hay ID en nota, buscamos "a lo bruto":
+    # Traemos candidatos por DNI Y candidatos por Apellido.
+    
+    candidatos = []
+    
+    # Intento A: Buscar directo por DNI
     if dni_tn_limpio and len(dni_tn_limpio) > 5:
-        res = consultar_api_aria(f"clientes?q={dni_tn_limpio}")
-        for c in res:
-            dni_aria = str(c.get('cliente_dnicuit','')).replace(".","").strip()
-            if dni_aria == dni_tn_limpio:
-                # Éxito directo
-                nombre_aria_full = f"{c.get('cliente_nombre','')} {c.get('cliente_apellido','')}"
-                if hay_coincidencia_palabras(nombre_aria_full, nombre_tn_limpio):
-                     return c, "✅ Encontrado por DNI y Validado por Nombre"
-                else:
-                     return c, "✅ Encontrado por DNI (Nombre diferente)"
-
-    # =========================================================================
-    # 🥉 PASO 3: BUSCAR POR APELLIDO (El Respaldo Poderoso)
-    # =========================================================================
+        candidatos.extend(consultar_api_aria(f"clientes?q={dni_tn_limpio}"))
+        
+    # Intento B: Buscar por Apellido (solo si es largo)
     partes_nombre = nombre_tn.split()
     if len(partes_nombre) >= 1:
         apellido_tn = partes_nombre[-1].lower() 
-        if len(apellido_tn) > 3: 
-            res = consultar_api_aria(f"clientes?q={apellido_tn}")
-            for c in res:
-                if not c.get('cliente_id'): continue # Ignorar vacíos
-                
-                # DATOS DEL CANDIDATO
-                dni_aria = str(c.get('cliente_dnicuit','')).replace(".","").strip()
-                nombre_aria_full = f"{c.get('cliente_nombre','')} {c.get('cliente_apellido','')}"
+        if len(apellido_tn) > 2: # Bajé a 2 letras por si es "Li", "Wu", etc.
+            candidatos.extend(consultar_api_aria(f"clientes?q={apellido_tn}"))
 
-                # 3.1 ¡EL TRUCO! Buscamos el DNI dentro de los resultados del Apellido
-                if dni_aria == dni_tn_limpio:
-                    return c, "✅ Encontrado por Apellido > Coincidencia DNI"
-                
-                # 3.2 Si el DNI no es, miramos si el nombre coincide mucho (para casos desesperados)
-                if hay_coincidencia_palabras(nombre_aria_full, nombre_tn_limpio):
-                     # Guardamos este resultado, pero seguimos buscando por si aparece el DNI exacto mas adelante
-                     # (O retornamos con warning si preferimos velocidad)
-                     # Para ser seguros, retornamos solo si no encontramos DNI match en toda la lista
-                     pass 
+    # ---------------------------------------------------------
+    # 3. FILTRADO INTELIGENTE
+    # ---------------------------------------------------------
+    # Recorremos TODOS los candidatos encontrados (pueden ser muchos)
+    for c in candidatos:
+        if not c.get('cliente_id'): continue # Saltamos vacíos
+        
+        # DATOS ARIA (Limpiando tipos de dato)
+        # IMPORTANTE: str() aquí evita el error número vs texto
+        dni_aria = str(c.get('cliente_dnicuit','')).replace(".","").strip()
+        nombre_aria_full = f"{c.get('cliente_nombre','')} {c.get('cliente_apellido','')}"
 
-            # Si terminamos el bucle y no hubo DNI match, podríamos devolver el de nombre parecido
-            # Pero por seguridad, mejor dejar que falle o usar la búsqueda manual si el DNI está mal.
-            # (O descomenta abajo si quieres que te muestre coincidencia de nombre sin DNI)
-            # return c, "⚠️ Coincidencia por Apellido (Verificar DNI)"
+        # 3.1 MATCH EXACTO DE DNI (El ganador indiscutido)
+        if dni_aria == dni_tn_limpio:
+            # Encontramos el DNI exacto, devolvemos este cliente
+            return c, "✅ Encontrado por DNI (Búsqueda Profunda)"
+
+    # Si salimos del bucle y nadie coincidió en DNI, buscamos coincidencia de nombre
+    # como "premio consuelo" (pero avisando que el DNI no cuadra)
+    for c in candidatos:
+        if not c.get('cliente_id'): continue
+        nombre_aria_full = f"{c.get('cliente_nombre','')} {c.get('cliente_apellido','')}"
+        
+        if hay_coincidencia_palabras(nombre_aria_full, nombre_tn_limpio):
+            return c, "⚠️ Coincidencia por Nombre (DNI no coincide, revisar)"
 
     return None, None
 
