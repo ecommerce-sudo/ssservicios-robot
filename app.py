@@ -104,21 +104,24 @@ def hay_coincidencia_palabras(texto_aria, texto_tn):
     return len(palabras_aria.intersection(palabras_tn)) > 0
 
 def buscar_cliente(nombre_tn, dni_tn, nota_tn):
-    # LOG DE DEPURACIÓN
     debug_log = []
     
+    # LIMPIEZA TOTAL (Convertimos a string SIEMPRE)
     dni_tn_limpio = str(dni_tn).replace(".", "").replace(" ", "").strip()
     nombre_tn_limpio = nombre_tn.strip().lower()
     
-    # ---------------------------------------------------------
+    debug_log.append(f"Buscando DNI TN: '{dni_tn_limpio}'")
+
+    # =========================================================================
     # 1. ID EN NOTA (Prioridad Máxima)
-    # ---------------------------------------------------------
+    # =========================================================================
     match = re.search(r'\b\d{3,6}\b', str(nota_tn))
     if match:
         posible_id = match.group()
         res = consultar_api_aria(f"cliente/{posible_id}")
         if res and isinstance(res, list) and len(res) > 0:
             cliente = res[0]
+            # Extraemos datos ARIA convirtiendo TODO a string
             dni_aria = str(cliente.get('cliente_dnicuit','')).replace(".","").strip()
             apellido_aria = cliente.get('cliente_apellido', '')
             nombre_aria = cliente.get('cliente_nombre', '')
@@ -131,53 +134,53 @@ def buscar_cliente(nombre_tn, dni_tn, nota_tn):
             else:
                  return cliente, f"⚠️ ID {posible_id} hallado, pero datos dudosos.", debug_log
 
-    # ---------------------------------------------------------
-    # 2. BÚSQUEDA TRIPLE (DNI + APELLIDO + NOMBRE)
-    # ---------------------------------------------------------
+    # =========================================================================
+    # 2. BÚSQUEDA MASIVA (La Red de Arrastre)
+    # =========================================================================
+    # A veces la API no encuentra por DNI pero si por Apellido. Traemos TODOS.
     candidatos = []
     
     # A. Buscar por DNI
     if dni_tn_limpio and len(dni_tn_limpio) > 5:
         res_dni = consultar_api_aria(f"clientes?q={dni_tn_limpio}")
         candidatos.extend(res_dni)
-        debug_log.append(f"Busqueda DNI '{dni_tn_limpio}': {len(res_dni)} resultados")
+        debug_log.append(f"Resultados API x DNI: {len(res_dni)}")
         
-    # B. Buscar por Apellido
+    # B. Buscar por Apellido (solo si es largo)
     partes_nombre = nombre_tn.split()
     if len(partes_nombre) >= 1:
         apellido_tn = partes_nombre[-1].lower() 
         if len(apellido_tn) > 2:
             res_ape = consultar_api_aria(f"clientes?q={apellido_tn}")
             candidatos.extend(res_ape)
-            debug_log.append(f"Busqueda Apellido '{apellido_tn}': {len(res_ape)} resultados")
-
-    # C. Buscar por Nombre de Pila (NUEVO - Para casos difíciles)
-    if len(partes_nombre) >= 1:
-        nombre_pila = partes_nombre[0].lower()
-        if len(nombre_pila) > 2:
-             res_nom = consultar_api_aria(f"clientes?q={nombre_pila}")
-             candidatos.extend(res_nom)
-             debug_log.append(f"Busqueda Nombre '{nombre_pila}': {len(res_nom)} resultados")
+            debug_log.append(f"Resultados API x Apellido '{apellido_tn}': {len(res_ape)}")
 
     # ---------------------------------------------------------
-    # 3. FILTRADO LOCAL (Revisamos uno por uno)
+    # 3. COMPARACIÓN ESTRICTA (Uno por Uno)
     # ---------------------------------------------------------
-    # Eliminamos duplicados por ID
+    # Eliminamos duplicados
     candidatos_unicos = {v['cliente_id']: v for v in candidatos if v.get('cliente_id')}.values()
     
-    # Intento 1: Match EXACTO de DNI
     for c in candidatos_unicos:
-        dni_aria = str(c.get('cliente_dnicuit','')).replace(".","").strip()
+        # CONVERSION A STRING FORZADA
+        dni_aria_crudo = c.get('cliente_dnicuit','')
+        dni_aria = str(dni_aria_crudo).replace(".","").strip()
+        
+        nombre_aria_full = f"{c.get('cliente_nombre','')} {c.get('cliente_apellido','')}"
+
+        # Debug interno
+        # debug_log.append(f"Comparando: Aria('{dni_aria}') vs TN('{dni_tn_limpio}')")
+
+        # 3.1 MATCH EXACTO DE DNI (El ganador)
         if dni_aria == dni_tn_limpio:
             return c, "✅ Encontrado por DNI (Búsqueda Profunda)", debug_log
 
-    # Intento 2: Match de Nombre (si falló DNI)
+    # 3.2 Intento secundario: Nombre
     for c in candidatos_unicos:
         nombre_aria_full = f"{c.get('cliente_nombre','')} {c.get('cliente_apellido','')}"
         if hay_coincidencia_palabras(nombre_aria_full, nombre_tn_limpio):
             return c, "⚠️ Coincidencia por Nombre (DNI no coincide, revisar)", debug_log
 
-    # Si llegamos acá, fallamos. Devolvemos el log para que el usuario vea qué pasó.
     return None, None, debug_log
 
 def extraer_productos(pedido):
@@ -256,12 +259,15 @@ else:
                     if not cliente_aria:
                         st.error("❌ Cliente no encontrado automáticamente.")
                         
-                        # --- DEBUGGER VISUAL ---
-                        with st.expander("🐞 Ver Datos Técnicos (¿Por qué falló?)"):
-                            st.write("**Estrategias probadas:**")
+                        # DEBUGGER VISUAL MEJORADO
+                        with st.expander("🐞 DIAGNÓSTICO TÉCNICO"):
+                            st.write(f"**Cliente TN:** {nombre}")
+                            st.write(f"**DNI TN:** {p['customer'].get('identification')}")
+                            st.write("---")
+                            st.write("**Log del Robot:**")
                             for log in debug_data:
-                                st.text(f"- {log}")
-                            st.info("Si la lista dice '0 resultados', es que Aria no encuentra ese DNI/Nombre.")
+                                st.code(log)
+                            st.info("Si en el log ves 'Resultados API x DNI: 0', entonces la API de Aria no encuentra el DNI directo. Pero como buscamos también por Apellido, debería aparecer abajo.")
 
                         st.markdown("---")
                         st.write("🕵️ **Opción Manual:**")
