@@ -233,7 +233,7 @@ else:
                             st.warning(f"⚠️ FALTA SALDO: ${dif:,.0f}")
                             
                             telefono = p['customer'].get('phone') or p['billing_address'].get('phone')
-                            msj_wa = f"Hola {nombre}, falta abonar ${dif:,.0f} para tu pedido #{id_p}."
+                            msj_wa = f"Hola {nombre}, para poder procesar el pedido te pedimos que abones por transferencia la diferencia entre el cupo disponible de tu cuenta y el valor de la compra ${dif:,.0f} para tu pedido #{id_p}."
                             link_wa = f"https://wa.me/{telefono}?text={urllib.parse.quote(msj_wa)}"
                             
                             st.markdown(f"[📲 Enviar WhatsApp]({link_wa})")
