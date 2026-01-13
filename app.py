@@ -27,7 +27,7 @@ TAG_ESPERA = "#ESPERANDO_DIFERENCIA"
 CUOTAS_A_GENERAR = 3
 
 # ==========================================
-# 🧠 MEMORIA SIMPLE (Para que funcione el botón cobrar)
+# 🧠 MEMORIA DE SESIÓN
 # ==========================================
 if 'analisis_activo' not in st.session_state:
     st.session_state['analisis_activo'] = {}
@@ -98,6 +98,7 @@ def buscar_cliente(nombre, dni, nota):
     dni_limpio = str(dni).replace(".", "").replace(" ", "").strip()
     nombre_limpio = nombre.strip().lower()
     
+    # 1. Por DNI
     if dni_limpio and len(dni_limpio) > 5:
         res = consultar_api_aria(f"clientes?q={dni_limpio}")
         for c in res:
@@ -105,6 +106,7 @@ def buscar_cliente(nombre, dni, nota):
             if dni_aria == dni_limpio:
                 return c, "✅ Encontrado por DNI (Tiendanube)"
 
+    # 2. Por ID en Nota
     match = re.search(r'\b\d{3,6}\b', str(nota))
     if match:
         posible_id = match.group()
@@ -114,6 +116,7 @@ def buscar_cliente(nombre, dni, nota):
             if apellido_aria in nombre_limpio:
                 return res[0], f"✅ Encontrado por ID en Nota ({posible_id})"
 
+    # 3. Por Apellido (CON VALIDACIÓN DE ID)
     partes_nombre = nombre.split()
     if len(partes_nombre) >= 1:
         apellido = partes_nombre[-1].lower() 
@@ -122,7 +125,10 @@ def buscar_cliente(nombre, dni, nota):
             for c in res:
                 nombre_aria = c.get('cliente_nombre', '').lower()
                 apellido_aria_full = c.get('cliente_apellido', '').lower()
-                if apellido_aria_full in nombre_limpio:
+                id_check = c.get('cliente_id')
+                
+                # Solo devolvemos si tiene ID
+                if apellido_aria_full in nombre_limpio and id_check:
                     return c, "⚠️ Coincidencia por Apellido (Verificar DNI)"
 
     return None, None
@@ -189,44 +195,66 @@ else:
                 st.write(f"**Nota:** {nota}")
             
             with col2:
-                # --- SOLUCION AL BOTÓN COBRAR QUE NO FUNCIONABA ---
-                # Usamos una variable para saber si debemos mostrar el análisis
+                # Control de apertura del panel
                 mostrar_analisis = False
                 
-                # Si aprietas el botón O si ya estaba abierto en memoria
-                if st.button(f"🔍 Analizar Cliente en ARIA", key=f"btn_{id_p}"):
+                if st.button(f"🔍 Analizar Cliente", key=f"btn_{id_p}"):
                     st.session_state['analisis_activo'][id_p] = True
                     mostrar_analisis = True
                 elif st.session_state['analisis_activo'].get(id_p):
                     mostrar_analisis = True
 
                 if mostrar_analisis:
+                    # 1. INTENTO AUTOMÁTICO
                     cliente_aria, metodo_hallazgo = buscar_cliente(nombre, p['customer'].get('identification'), nota)
                     
+                    # 2. SI FALLA EL AUTOMÁTICO -> OPCIÓN MANUAL
                     if not cliente_aria:
-                        st.error("❌ Cliente no encontrado en ARIA.")
-                        if st.button("Cerrar", key=f"close_{id_p}"):
-                            del st.session_state['analisis_activo'][id_p]
-                            st.rerun()
-                    else:
+                        st.error("❌ Cliente no encontrado automáticamente.")
+                        
+                        st.markdown("---")
+                        st.write("🕵️ **Opción Manual:**")
+                        col_m1, col_m2 = st.columns([2,1])
+                        
+                        with col_m1:
+                            id_manual = st.text_input("Ingresar Nro Cliente ARIA:", key=f"input_man_{id_p}")
+                        
+                        with col_m2:
+                            if st.button("Buscar Manual", key=f"btn_man_{id_p}"):
+                                # Buscamos por ID específico
+                                res = consultar_api_aria(f"cliente/{id_manual}")
+                                if res and isinstance(res, list) and len(res) > 0 and res[0].get('cliente_id'):
+                                    # ¡BINGO! Sobreescribimos la variable cliente_aria con el manual
+                                    cliente_aria = res[0]
+                                    metodo_hallazgo = f"✅ Encontrado Manualmente (ID: {id_manual})"
+                                    st.toast("Cliente Encontrado Manualmente", icon="😎")
+                                    # Forzamos recarga para que el código de abajo lo procese limpio
+                                    # (Es un truco para no duplicar código)
+                                    # Pero como Streamlit es lineal, necesitamos que 'cliente_aria' persista?
+                                    # No, en este ciclo 'cliente_aria' ya tiene datos.
+                                    pass 
+                                else:
+                                    st.error("❌ Ese ID no existe en Aria.")
+
+                    # 3. SI TENEMOS CLIENTE (Ya sea Auto o Manual en este mismo ciclo)
+                    if cliente_aria:
                         id_aria = cliente_aria.get('cliente_id')
                         cupo = float(cliente_aria.get('clienteScoringFinanciable', 0))
                         saldo = float(cliente_aria.get('cliente_saldo', 0))
                         
                         st.info(f"{metodo_hallazgo}")
-                        st.info(f"✅ Cliente: **{id_aria}** | Cupo: **${cupo:,.0f}** | Saldo: ${saldo:,.0f}")
+                        st.success(f"🆔 Cliente: **{id_aria}**")
+                        st.info(f"💰 Cupo: **${cupo:,.0f}** | Saldo: ${saldo:,.0f}")
                         
                         if saldo > 0:
                             st.error("⛔ RECHAZADO: Tiene deuda vigente.")
                         elif total <= cupo:
                             st.success("🚀 APROBADO: Tiene cupo suficiente.")
                             
-                            # AHORA SÍ FUNCIONA ESTE BOTÓN
                             if st.button(f"💸 COBRAR AHORA", key=f"cobrar_{id_p}"):
                                 ok, msg = cargar_deuda_aria(id_aria, total, id_p, prod_str)
                                 if ok:
                                     st.toast("✅ ¡Cobrado exitosamente!", icon="🎉")
-                                    # Limpiamos el análisis y recargamos
                                     del st.session_state['analisis_activo'][id_p]
                                     if modo_pendientes:
                                         eliminar_etiqueta(id_p, nota)
@@ -246,7 +274,8 @@ else:
                                 del st.session_state['analisis_activo'][id_p]
                                 st.rerun()
 
-                        # Botón para cerrar manualmente si solo querías mirar
-                        if st.button("Cerrar Análisis", key=f"close_ok_{id_p}"):
-                            del st.session_state['analisis_activo'][id_p]
-                            st.rerun()
+                    # Botón para cerrar
+                    st.markdown("---")
+                    if st.button("Cerrar Panel", key=f"close_{id_p}"):
+                        del st.session_state['analisis_activo'][id_p]
+                        st.rerun()
