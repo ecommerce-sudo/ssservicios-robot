@@ -8,7 +8,6 @@ from datetime import datetime, timezone
 # ⚙️ CONFIGURACIÓN SEGURA (Lectura de Secrets)
 # ==========================================
 try:
-    # El robot busca las llaves en la caja fuerte de la nube
     TN_TOKEN = st.secrets["TN_TOKEN"]
     TN_ID = st.secrets["TN_ID"]
     ARIA_KEY = st.secrets["ARIA_KEY"]
@@ -90,22 +89,46 @@ def cargar_deuda_aria(id_cliente, monto_total, orden_id, lista_productos):
         return False, str(e)
 
 # ==========================================
-# 🧠 UTILIDADES
+# 🧠 UTILIDADES INTELIGENTES (La Mejora)
 # ==========================================
 def buscar_cliente(nombre, dni, nota):
-    dni = str(dni).replace(".", "").strip()
-    match = re.search(r'\d+', str(nota))
+    # --- 1. LIMPIEZA DE DATOS ---
+    dni_limpio = str(dni).replace(".", "").replace(" ", "").strip()
+    nombre_limpio = nombre.strip().lower()
+    
+    # --- ESTRATEGIA A: BÚSQUEDA POR DNI (La más exacta) ---
+    if dni_limpio and len(dni_limpio) > 5:
+        res = consultar_api_aria(f"clientes?q={dni_limpio}")
+        for c in res:
+            dni_aria = str(c.get('cliente_dnicuit','')).replace(".","").strip()
+            if dni_aria == dni_limpio:
+                return c, "✅ Encontrado por DNI (Tiendanube)"
+
+    # --- ESTRATEGIA B: BÚSQUEDA POR ID EN NOTA (Si el cliente lo escribió) ---
+    match = re.search(r'\b\d{3,6}\b', str(nota))
     if match:
-        res = consultar_api_aria(f"cliente/{match.group()}")
-        if res: return res[0], "ID Directo"
-    if dni:
-        res = consultar_api_aria(f"clientes?q={dni}")
-        for c in res:
-            if str(c.get('cliente_dnicuit','')).replace(".","").strip() == dni: return c, "DNI"
-    if nombre:
-        res = consultar_api_aria(f"clientes?q={nombre.split(' ')[0]}")
-        for c in res:
-            if str(c.get('cliente_dnicuit','')).replace(".","").strip() == dni: return c, "Nombre"
+        posible_id = match.group()
+        res = consultar_api_aria(f"cliente/{posible_id}")
+        if res and isinstance(res, list) and len(res) > 0:
+            apellido_aria = res[0].get('cliente_apellido', '').lower()
+            # Chequeo de seguridad simple: que el apellido coincida un poco
+            if apellido_aria in nombre_limpio:
+                return res[0], f"✅ Encontrado por ID en Nota ({posible_id})"
+
+    # --- ESTRATEGIA C: BÚSQUEDA POR APELLIDO (El último recurso) ---
+    partes_nombre = nombre.split()
+    if len(partes_nombre) >= 1:
+        apellido = partes_nombre[-1].lower() 
+        if len(apellido) > 3: 
+            res = consultar_api_aria(f"clientes?q={apellido}")
+            for c in res:
+                nombre_aria = c.get('cliente_nombre', '').lower()
+                apellido_aria_full = c.get('cliente_apellido', '').lower()
+                
+                # Cruzamos datos para evitar falsos positivos
+                if apellido_aria_full in nombre_limpio:
+                    return c, "⚠️ Coincidencia por Apellido (Verificar DNI)"
+
     return None, None
 
 def extraer_productos(pedido):
@@ -139,7 +162,6 @@ with st.spinner('Conectando con Tiendanube...'):
 if not pedidos:
     st.info("💤 No se encontraron pedidos.")
 else:
-    # Filtramos visualmente según la opción elegida
     pedidos_filtrados = []
     for p in pedidos:
         nota = p.get('owner_note') or ""
@@ -147,80 +169,4 @@ else:
         
         if modo_pendientes and es_espera:
             pedidos_filtrados.append(p)
-        elif not modo_pendientes and not es_espera:
-            pedidos_filtrados.append(p)
-
-    st.success(f"Se encontraron {len(pedidos_filtrados)} pedidos en esta bandeja.")
-
-    for p in pedidos_filtrados:
-        id_p = p['id']
-        nombre = p['customer']['name']
-        total = float(p['total'])
-        nota = p.get('owner_note', '')
-        metodo = p.get('payment_details', {}).get('method', '').lower()
-        es_manual = 'custom' in metodo or 'convenir' in metodo
-        prod_str = extraer_productos(p)
-
-        # Tarjeta visual por cada pedido
-        with st.expander(f"🛒 #{id_p} | {nombre} | ${total:,.0f}", expanded=True):
-            
-            # Alerta si no es pago manual
-            if not es_manual and not modo_pendientes:
-                st.warning(f"⚠️ Pago: '{metodo}'. El robot suele ignorar esto por seguridad.")
-
-            col1, col2 = st.columns(2)
-            with col1:
-                st.write(f"**Productos:** {prod_str}")
-                st.write(f"**DNI:** {p['customer'].get('identification')}")
-            
-            with col2:
-                # Botón de Análisis
-                if st.button(f"🔍 Analizar Cliente en ARIA", key=f"btn_{id_p}"):
-                    
-                    cliente_aria, tipo = buscar_cliente(nombre, p['customer'].get('identification'), p.get('note',''))
-                    
-                    if not cliente_aria:
-                        st.error("❌ Cliente no encontrado en ARIA.")
-                    else:
-                        id_aria = cliente_aria.get('cliente_id')
-                        cupo = float(cliente_aria.get('clienteScoringFinanciable', 0))
-                        saldo = float(cliente_aria.get('cliente_saldo', 0))
-                        
-                        st.info(f"✅ Cliente: **{id_aria}** | Cupo: **${cupo:,.0f}** | Saldo: ${saldo:,.0f}")
-                        
-                        if saldo > 0:
-                            st.error("⛔ RECHAZADO: Tiene deuda vigente.")
-                        elif total <= cupo:
-                            st.success("🚀 APROBADO: Tiene cupo suficiente.")
-                            
-                            # BOTÓN DE COBRO REAL
-                            if st.button(f"💸 COBRAR AHORA (Generar Deuda)", key=f"cobrar_{id_p}"):
-                                ok, msg = cargar_deuda_aria(id_aria, total, id_p, prod_str)
-                                if ok:
-                                    st.toast("✅ ¡Cobrado exitosamente!", icon="🎉")
-                                    if modo_pendientes:
-                                        eliminar_etiqueta(id_p, nota)
-                                        st.rerun()
-                                    else:
-                                        # Recargar para refrescar estado
-                                        st.rerun()
-                                else:
-                                    st.error(f"Fallo Aria: {msg}")
-                        else:
-                            dif = total - cupo
-                            st.warning(f"⚠️ FALTA SALDO: ${dif:,.0f}")
-                            
-                            telefono = p['customer'].get('phone') or p['billing_address'].get('phone')
-                            msj_wa = f"Hola {nombre}, falta abonar ${dif:,.0f} para tu pedido #{id_p}."
-                            link_wa = f"https://wa.me/{telefono}?text={urllib.parse.quote(msj_wa)}"
-                            
-                            st.markdown(f"[📲 Enviar WhatsApp]({link_wa})")
-                            
-                            if not modo_pendientes:
-                                if st.button("📌 Pasar a SEGUIMIENTO", key=f"seg_{id_p}"):
-                                    actualizar_nota(id_p, nota, TAG_ESPERA)
-                                    st.rerun()
-                            else:
-                                if st.button("🧹 Ya pagó manual (Borrar Etiqueta)", key=f"clean_{id_p}"):
-                                    eliminar_etiqueta(id_p, nota)
-                                    st.rerun()
+        elif not modo_pendientes and not es_espera
