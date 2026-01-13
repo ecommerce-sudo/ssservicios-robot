@@ -104,7 +104,9 @@ def hay_coincidencia_palabras(texto_aria, texto_tn):
     return len(palabras_aria.intersection(palabras_tn)) > 0
 
 def buscar_cliente(nombre_tn, dni_tn, nota_tn):
-    # LIMPIEZA TOTAL
+    # LOG DE DEPURACIÓN
+    debug_log = []
+    
     dni_tn_limpio = str(dni_tn).replace(".", "").replace(" ", "").strip()
     nombre_tn_limpio = nombre_tn.strip().lower()
     
@@ -117,66 +119,66 @@ def buscar_cliente(nombre_tn, dni_tn, nota_tn):
         res = consultar_api_aria(f"cliente/{posible_id}")
         if res and isinstance(res, list) and len(res) > 0:
             cliente = res[0]
-            # Extraemos datos ARIA convirtiendo TODO a string
             dni_aria = str(cliente.get('cliente_dnicuit','')).replace(".","").strip()
             apellido_aria = cliente.get('cliente_apellido', '')
             nombre_aria = cliente.get('cliente_nombre', '')
             nombre_completo_aria = f"{nombre_aria} {apellido_aria}"
             
-            # Comparaciones
             if dni_aria == dni_tn_limpio:
-                 return cliente, f"✅ ID {posible_id} confirmado por DNI"
+                 return cliente, f"✅ ID {posible_id} confirmado por DNI", debug_log
             elif hay_coincidencia_palabras(nombre_completo_aria, nombre_tn_limpio):
-                 return cliente, f"✅ ID {posible_id} confirmado por Nombre"
+                 return cliente, f"✅ ID {posible_id} confirmado por Nombre", debug_log
             else:
-                 return cliente, f"⚠️ ID {posible_id} hallado, pero datos dudosos."
+                 return cliente, f"⚠️ ID {posible_id} hallado, pero datos dudosos.", debug_log
 
     # ---------------------------------------------------------
-    # 2. BÚSQUEDA DE ARRASTRE (DNI + APELLIDO)
+    # 2. BÚSQUEDA TRIPLE (DNI + APELLIDO + NOMBRE)
     # ---------------------------------------------------------
-    # Si no hay ID en nota, buscamos "a lo bruto":
-    # Traemos candidatos por DNI Y candidatos por Apellido.
-    
     candidatos = []
     
-    # Intento A: Buscar directo por DNI
+    # A. Buscar por DNI
     if dni_tn_limpio and len(dni_tn_limpio) > 5:
-        candidatos.extend(consultar_api_aria(f"clientes?q={dni_tn_limpio}"))
+        res_dni = consultar_api_aria(f"clientes?q={dni_tn_limpio}")
+        candidatos.extend(res_dni)
+        debug_log.append(f"Busqueda DNI '{dni_tn_limpio}': {len(res_dni)} resultados")
         
-    # Intento B: Buscar por Apellido (solo si es largo)
+    # B. Buscar por Apellido
     partes_nombre = nombre_tn.split()
     if len(partes_nombre) >= 1:
         apellido_tn = partes_nombre[-1].lower() 
-        if len(apellido_tn) > 2: # Bajé a 2 letras por si es "Li", "Wu", etc.
-            candidatos.extend(consultar_api_aria(f"clientes?q={apellido_tn}"))
+        if len(apellido_tn) > 2:
+            res_ape = consultar_api_aria(f"clientes?q={apellido_tn}")
+            candidatos.extend(res_ape)
+            debug_log.append(f"Busqueda Apellido '{apellido_tn}': {len(res_ape)} resultados")
+
+    # C. Buscar por Nombre de Pila (NUEVO - Para casos difíciles)
+    if len(partes_nombre) >= 1:
+        nombre_pila = partes_nombre[0].lower()
+        if len(nombre_pila) > 2:
+             res_nom = consultar_api_aria(f"clientes?q={nombre_pila}")
+             candidatos.extend(res_nom)
+             debug_log.append(f"Busqueda Nombre '{nombre_pila}': {len(res_nom)} resultados")
 
     # ---------------------------------------------------------
-    # 3. FILTRADO INTELIGENTE
+    # 3. FILTRADO LOCAL (Revisamos uno por uno)
     # ---------------------------------------------------------
-    # Recorremos TODOS los candidatos encontrados (pueden ser muchos)
-    for c in candidatos:
-        if not c.get('cliente_id'): continue # Saltamos vacíos
-        
-        # DATOS ARIA (Limpiando tipos de dato)
-        # IMPORTANTE: str() aquí evita el error número vs texto
+    # Eliminamos duplicados por ID
+    candidatos_unicos = {v['cliente_id']: v for v in candidatos if v.get('cliente_id')}.values()
+    
+    # Intento 1: Match EXACTO de DNI
+    for c in candidatos_unicos:
         dni_aria = str(c.get('cliente_dnicuit','')).replace(".","").strip()
-        nombre_aria_full = f"{c.get('cliente_nombre','')} {c.get('cliente_apellido','')}"
-
-        # 3.1 MATCH EXACTO DE DNI (El ganador indiscutido)
         if dni_aria == dni_tn_limpio:
-            # Encontramos el DNI exacto, devolvemos este cliente
-            return c, "✅ Encontrado por DNI (Búsqueda Profunda)"
+            return c, "✅ Encontrado por DNI (Búsqueda Profunda)", debug_log
 
-    # Si salimos del bucle y nadie coincidió en DNI, buscamos coincidencia de nombre
-    # como "premio consuelo" (pero avisando que el DNI no cuadra)
-    for c in candidatos:
-        if not c.get('cliente_id'): continue
+    # Intento 2: Match de Nombre (si falló DNI)
+    for c in candidatos_unicos:
         nombre_aria_full = f"{c.get('cliente_nombre','')} {c.get('cliente_apellido','')}"
-        
         if hay_coincidencia_palabras(nombre_aria_full, nombre_tn_limpio):
-            return c, "⚠️ Coincidencia por Nombre (DNI no coincide, revisar)"
+            return c, "⚠️ Coincidencia por Nombre (DNI no coincide, revisar)", debug_log
 
-    return None, None
+    # Si llegamos acá, fallamos. Devolvemos el log para que el usuario vea qué pasó.
+    return None, None, debug_log
 
 def extraer_productos(pedido):
     lista = []
@@ -249,11 +251,18 @@ else:
                     mostrar_analisis = True
 
                 if mostrar_analisis:
-                    cliente_aria, metodo_hallazgo = buscar_cliente(nombre, p['customer'].get('identification'), nota)
+                    cliente_aria, metodo_hallazgo, debug_data = buscar_cliente(nombre, p['customer'].get('identification'), nota)
                     
                     if not cliente_aria:
                         st.error("❌ Cliente no encontrado automáticamente.")
                         
+                        # --- DEBUGGER VISUAL ---
+                        with st.expander("🐞 Ver Datos Técnicos (¿Por qué falló?)"):
+                            st.write("**Estrategias probadas:**")
+                            for log in debug_data:
+                                st.text(f"- {log}")
+                            st.info("Si la lista dice '0 resultados', es que Aria no encuentra ese DNI/Nombre.")
+
                         st.markdown("---")
                         st.write("🕵️ **Opción Manual:**")
                         col_m1, col_m2 = st.columns([2,1])
