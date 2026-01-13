@@ -27,7 +27,7 @@ TAG_ESPERA = "#ESPERANDO_DIFERENCIA"
 CUOTAS_A_GENERAR = 3
 
 # ==========================================
-# 🧠 MEMORIA DE SESIÓN (Para recordar IDs)
+# 🧠 MEMORIA DE SESIÓN
 # ==========================================
 if 'clientes_identificados' not in st.session_state:
     st.session_state['clientes_identificados'] = {}
@@ -98,7 +98,7 @@ def buscar_cliente(nombre, dni, nota):
     dni_limpio = str(dni).replace(".", "").replace(" ", "").strip()
     nombre_limpio = nombre.strip().lower()
     
-    # 1. Por DNI (Prioridad 1)
+    # 1. Por DNI
     if dni_limpio and len(dni_limpio) > 5:
         res = consultar_api_aria(f"clientes?q={dni_limpio}")
         for c in res:
@@ -106,7 +106,7 @@ def buscar_cliente(nombre, dni, nota):
             if dni_aria == dni_limpio:
                 return c, "✅ Encontrado por DNI (Tiendanube)"
 
-    # 2. Por ID en Nota (Prioridad 2)
+    # 2. Por ID en Nota
     match = re.search(r'\b\d{3,6}\b', str(nota))
     if match:
         posible_id = match.group()
@@ -116,7 +116,7 @@ def buscar_cliente(nombre, dni, nota):
             if apellido_aria in nombre_limpio:
                 return res[0], f"✅ Encontrado por ID en Nota ({posible_id})"
 
-    # 3. Por Apellido (Prioridad 3 - Desesperada)
+    # 3. Por Apellido
     partes_nombre = nombre.split()
     if len(partes_nombre) >= 1:
         apellido = partes_nombre[-1].lower() 
@@ -180,10 +180,8 @@ else:
         es_manual = 'custom' in metodo or 'convenir' in metodo
         prod_str = extraer_productos(p)
 
-        # Verificamos si tenemos el ID en memoria
+        # Chequeo Memoria
         id_memoria = st.session_state['clientes_identificados'].get(id_p)
-
-        # Título limpio (como estaba originalmente)
         titulo_tarjeta = f"🛒 #{id_p} | {nombre} | ${total:,.0f}"
 
         with st.expander(titulo_tarjeta, expanded=True):
@@ -194,46 +192,83 @@ else:
             col1, col2 = st.columns(2)
             with col1:
                 st.write(f"**Productos:** {prod_str}")
-                st.write(f"**DNI (TN):** {p['customer'].get('identification')}")
+                st.write(f"**DNI:** {p['customer'].get('identification')}")
                 
-                # --- AQUI ESTÁ EL CAMBIO SOLICITADO ---
-                if id_memoria:
-                    # Si ya lo encontramos, mostramos el ID grande y verde
+                # MOSTRAR ID SI LO TENEMOS (Y NO ES EL ERROR)
+                if id_memoria and id_memoria != "NO_ENCONTRADO":
                     st.markdown(f"#### 🆔 ID Cliente: :green[{id_memoria}]")
-                    # Ponemos la nota original abajo chiquita por si acaso
                     if nota: st.caption(f"Nota original: {nota}")
                 else:
-                    # Si no, mostramos la nota normal
                     st.write(f"**Nota:** {nota}")
             
             with col2:
-                # Botón de Análisis
-                if st.button(f"🔍 Analizar Cliente", key=f"btn_{id_p}"):
+                # ============================================================
+                # CASO 1: CLIENTE NO ENCONTRADO (ERROR PERSISTENTE)
+                # ============================================================
+                if id_memoria == "NO_ENCONTRADO":
+                    st.error("❌ Cliente NO encontrado en ARIA.")
                     
-                    cliente_aria, metodo_hallazgo = buscar_cliente(nombre, p['customer'].get('identification'), nota)
-                    
-                    if not cliente_aria:
-                        st.error("❌ Cliente no encontrado en ARIA.")
-                    else:
-                        id_aria = cliente_aria.get('cliente_id')
-                        
-                        # GUARDAMOS EN MEMORIA
-                        st.session_state['clientes_identificados'][id_p] = id_aria
-                        
-                        # --- RECARGAMOS LA PÁGINA ---
-                        # Al recargar, entrará en el 'if id_memoria' de arriba y mostrará el ID
+                    # Botón para volver a intentar (por si corregiste el DNI en TN o algo asi)
+                    if st.button("🔄 Reintentar Búsqueda", key=f"retry_{id_p}"):
+                        # Borramos la memoria mala y recargamos
+                        del st.session_state['clientes_identificados'][id_p]
                         st.rerun()
 
-                # Si ya tenemos el ID, mostramos los datos financieros sin tener que apretar Analizar de nuevo
-                # (Opcional: Esto ayuda a que si recargas, sigas viendo la info de deuda)
-                if id_memoria:
-                     # Recuperamos info fresca si quisiéramos, pero por ahora mostramos botones de acción
-                     # Como hicimos un rerun, necesitamos volver a buscar para mostrar saldos o confiar en el flujo
-                     # Para simplificar, dejamos que el usuario vuelva a apretar si quiere ver saldos,
-                     # O podemos mostrar botones de cobro directos si ya está identificado.
-                     pass 
-                     
-                # Muestro los mensajes de estado SI ACABAMOS DE ENCONTRARLO (esto es complejo con rerun)
-                # Asi que simplificamos: Al hacer rerun, el usuario ve el ID a la izquierda.
-                # Si quiere ver Cupo/Saldo, puede apretar Analizar de nuevo (que es instantáneo porque ya tiene los datos).
-                # O podemos mejorar eso luego. Por ahora cumple tu pedido visual.
+                # ============================================================
+                # CASO 2: CLIENTE ENCONTRADO (MUESTRA DATOS AUTO)
+                # ============================================================
+                elif id_memoria:
+                    res = consultar_api_aria(f"cliente/{id_memoria}")
+                    if res and isinstance(res, list) and len(res) > 0:
+                        datos_cliente = res[0]
+                        cupo = float(datos_cliente.get('clienteScoringFinanciable', 0))
+                        saldo = float(datos_cliente.get('cliente_saldo', 0))
+
+                        st.info(f"💰 Cupo: **${cupo:,.0f}** | Saldo: ${saldo:,.0f}")
+
+                        if saldo > 0:
+                            st.error("⛔ RECHAZADO: Tiene deuda vigente.")
+                        elif total <= cupo:
+                            st.success("🚀 APROBADO: Tiene cupo suficiente.")
+                            if st.button(f"💸 COBRAR AHORA", key=f"cobrar_{id_p}"):
+                                ok, msg = cargar_deuda_aria(id_memoria, total, id_p, prod_str)
+                                if ok:
+                                    st.toast("✅ ¡Cobrado exitosamente!", icon="🎉")
+                                    if modo_pendientes:
+                                        eliminar_etiqueta(id_p, nota)
+                                        st.rerun()
+                                    else:
+                                        st.rerun()
+                                else:
+                                    st.error(f"Fallo Aria: {msg}")
+                        else:
+                            dif = total - cupo
+                            st.warning(f"⚠️ FALTA SALDO: ${dif:,.0f}")
+                            telefono = p['customer'].get('phone') or p['billing_address'].get('phone')
+                            msj_wa = f"Hola {nombre}, falta abonar ${dif:,.0f} para tu pedido #{id_p}."
+                            link_wa = f"https://wa.me/{telefono}?text={urllib.parse.quote(msj_wa)}"
+                            st.markdown(f"[📲 Enviar WhatsApp]({link_wa})")
+                            
+                            if st.button("📌 Pasar a SEGUIMIENTO", key=f"seg_{id_p}"):
+                                actualizar_nota(id_p, nota, TAG_ESPERA)
+                                st.rerun()
+                    else:
+                        st.error("Error técnico al consultar saldo.")
+
+                # ============================================================
+                # CASO 3: AÚN NO ANALIZADO (BOTÓN INICIAL)
+                # ============================================================
+                else:
+                    if st.button(f"🔍 Analizar Cliente", key=f"btn_{id_p}"):
+                        cliente_aria, metodo_hallazgo = buscar_cliente(nombre, p['customer'].get('identification'), nota)
+                        
+                        if not cliente_aria:
+                            # GUARDAMOS EL ERROR EN MEMORIA
+                            st.session_state['clientes_identificados'][id_p] = "NO_ENCONTRADO"
+                            st.rerun() # Recargamos para mostrar el error rojo
+                        else:
+                            # GUARDAMOS EL ÉXITO EN MEMORIA
+                            id_aria = cliente_aria.get('cliente_id')
+                            st.session_state['clientes_identificados'][id_p] = id_aria
+                            st.toast(f"✅ {metodo_hallazgo}")
+                            st.rerun() # Recargamos para mostrar los datos
