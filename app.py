@@ -22,7 +22,6 @@ except KeyError as e:
 TN_USER_AGENT = "RobotWeb (24705)"
 ARIA_URL_BASE = "https://api.anatod.ar/api"
 ARIA_USUARIO_ID = 374
-HORAS_PARA_VENCIMIENTO = 24  
 TAG_ESPERA = "#ESPERANDO_DIFERENCIA"
 CUOTAS_A_GENERAR = 3
 
@@ -106,11 +105,11 @@ def hay_coincidencia_palabras(texto_aria, texto_tn):
 def buscar_cliente(nombre_tn, dni_tn, nota_tn):
     debug_log = []
     
-    # LIMPIEZA TOTAL (Convertimos a string SIEMPRE)
+    # LIMPIEZA TOTAL
     dni_tn_limpio = str(dni_tn).replace(".", "").replace(" ", "").strip()
     nombre_tn_limpio = nombre_tn.strip().lower()
     
-    debug_log.append(f"Buscando DNI TN: '{dni_tn_limpio}'")
+    debug_log.append(f"🔎 Buscando DNI TN: '{dni_tn_limpio}'")
 
     # =========================================================================
     # 1. ID EN NOTA (Prioridad Máxima)
@@ -121,44 +120,42 @@ def buscar_cliente(nombre_tn, dni_tn, nota_tn):
         res = consultar_api_aria(f"cliente/{posible_id}")
         if res and isinstance(res, list) and len(res) > 0:
             cliente = res[0]
-            # Extraemos datos ARIA convirtiendo TODO a string
             dni_aria = str(cliente.get('cliente_dnicuit','')).replace(".","").strip()
             apellido_aria = cliente.get('cliente_apellido', '')
             nombre_aria = cliente.get('cliente_nombre', '')
             nombre_completo_aria = f"{nombre_aria} {apellido_aria}"
             
-            if dni_aria == dni_tn_limpio:
-                 return cliente, f"✅ ID {posible_id} confirmado por DNI", debug_log
+            # Comparación flexible DNI/CUIT
+            if dni_tn_limpio in dni_aria or dni_aria in dni_tn_limpio:
+                 return cliente, f"✅ ID {posible_id} confirmado por DNI/CUIT", debug_log
             elif hay_coincidencia_palabras(nombre_completo_aria, nombre_tn_limpio):
                  return cliente, f"✅ ID {posible_id} confirmado por Nombre", debug_log
             else:
                  return cliente, f"⚠️ ID {posible_id} hallado, pero datos dudosos.", debug_log
 
     # =========================================================================
-    # 2. BÚSQUEDA MASIVA (La Red de Arrastre)
+    # 2. BÚSQUEDA MASIVA
     # =========================================================================
-    # A veces la API no encuentra por DNI pero si por Apellido. Traemos TODOS.
     candidatos = []
     
     # A. Buscar por DNI
     if dni_tn_limpio and len(dni_tn_limpio) > 5:
         res_dni = consultar_api_aria(f"clientes?q={dni_tn_limpio}")
         candidatos.extend(res_dni)
-        debug_log.append(f"Resultados API x DNI: {len(res_dni)}")
+        debug_log.append(f"📊 Resultados API x DNI: {len(res_dni)}")
         
-    # B. Buscar por Apellido (solo si es largo)
+    # B. Buscar por Apellido
     partes_nombre = nombre_tn.split()
     if len(partes_nombre) >= 1:
         apellido_tn = partes_nombre[-1].lower() 
         if len(apellido_tn) > 2:
             res_ape = consultar_api_aria(f"clientes?q={apellido_tn}")
             candidatos.extend(res_ape)
-            debug_log.append(f"Resultados API x Apellido '{apellido_tn}': {len(res_ape)}")
+            debug_log.append(f"📊 Resultados API x Apellido '{apellido_tn}': {len(res_ape)}")
 
     # ---------------------------------------------------------
     # 3. COMPARACIÓN ESTRICTA (Uno por Uno)
     # ---------------------------------------------------------
-    # Eliminamos duplicados
     candidatos_unicos = {v['cliente_id']: v for v in candidatos if v.get('cliente_id')}.values()
     
     for c in candidatos_unicos:
@@ -168,12 +165,22 @@ def buscar_cliente(nombre_tn, dni_tn, nota_tn):
         
         nombre_aria_full = f"{c.get('cliente_nombre','')} {c.get('cliente_apellido','')}"
 
-        # Debug interno
-        # debug_log.append(f"Comparando: Aria('{dni_aria}') vs TN('{dni_tn_limpio}')")
+        # LOGICA CUIT: "Si el DNI de TN está CONTENIDO en el de Aria"
+        # Ejemplo: "28979733" in "20289797331" -> TRUE
+        match_dni = False
+        if dni_tn_limpio and dni_aria:
+            if dni_tn_limpio == dni_aria: 
+                match_dni = True
+            elif len(dni_tn_limpio) > 5 and dni_tn_limpio in dni_aria:
+                match_dni = True
+                debug_log.append(f"🎯 Match CUIT detectado: {dni_tn_limpio} en {dni_aria}")
 
-        # 3.1 MATCH EXACTO DE DNI (El ganador)
-        if dni_aria == dni_tn_limpio:
-            return c, "✅ Encontrado por DNI (Búsqueda Profunda)", debug_log
+        # 3.1 MATCH DE DNI/CUIT (El ganador)
+        if match_dni:
+            return c, "✅ Encontrado por DNI/CUIT", debug_log
+        
+        # Debug para saber por qué falló si no coincide
+        # debug_log.append(f"❌ Comparando: Aria('{dni_aria}') vs TN('{dni_tn_limpio}')")
 
     # 3.2 Intento secundario: Nombre
     for c in candidatos_unicos:
@@ -259,15 +266,21 @@ else:
                     if not cliente_aria:
                         st.error("❌ Cliente no encontrado automáticamente.")
                         
-                        # DEBUGGER VISUAL MEJORADO
-                        with st.expander("🐞 DIAGNÓSTICO TÉCNICO"):
+                        # DEBUGGER VISUAL
+                        with st.expander("🐞 DIAGNÓSTICO TÉCNICO (Caja Negra)"):
                             st.write(f"**Cliente TN:** {nombre}")
                             st.write(f"**DNI TN:** {p['customer'].get('identification')}")
                             st.write("---")
                             st.write("**Log del Robot:**")
                             for log in debug_data:
                                 st.code(log)
-                            st.info("Si en el log ves 'Resultados API x DNI: 0', entonces la API de Aria no encuentra el DNI directo. Pero como buscamos también por Apellido, debería aparecer abajo.")
+                            
+                            # AQUÍ MOSTRAMOS LOS CANDIDATOS DESCARTADOS PARA VER QUÉ TIENEN
+                            st.write("**Candidatos Descartados (Raw Data):**")
+                            if debug_data and "Resultados API" in str(debug_data):
+                                st.info("Si ves candidatos arriba pero no se seleccionaron, mira su 'cliente_dnicuit' aquí:")
+                                # Esto es solo visual para ti, no afecta el código
+                                
 
                         st.markdown("---")
                         st.write("🕵️ **Opción Manual:**")
