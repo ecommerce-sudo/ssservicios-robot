@@ -6,7 +6,7 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
 # ==========================================
-# ⚙️ CONFIGURACIÓN Y SECRETS
+# ⚙️ 1. CONFIGURACIÓN Y SEGURIDAD
 # ==========================================
 try:
     TN_TOKEN = st.secrets["TN_TOKEN"]
@@ -15,28 +15,34 @@ try:
     EMAIL_USER = st.secrets.get("EMAIL_USER", "")
     EMAIL_PASS = st.secrets.get("EMAIL_PASS", "")
 except FileNotFoundError:
-    st.error("⚠️ ERROR: No se encontraron los Secrets.")
+    st.error("⚠️ ERROR CRÍTICO: No se encontraron los Secrets (.streamlit/secrets.toml).")
     st.stop()
 except KeyError as e:
-    st.error(f"⚠️ FALTA CLAVE: {e}")
+    st.error(f"⚠️ FALTA CLAVE EN SECRETS: {e}")
     st.stop()
 
-# Configuración fija
+# Constantes del Negocio
 TN_USER_AGENT = "RobotWeb (24705)"
 ARIA_URL_BASE = "https://api.anatod.ar/api"
 TAG_ESPERA = "#ESPERANDO_DIFERENCIA"
 
+# Inicialización de Estado de Sesión
 if 'analisis_activo' not in st.session_state:
     st.session_state['analisis_activo'] = {}
 
 # ==========================================
-# 🔌 FUNCIONES DE CONEXIÓN
+# 🔌 2. FUNCIONES DE CONEXIÓN (API)
 # ==========================================
 def solo_numeros(texto):
+    """Limpia strings dejando solo dígitos 0-9."""
     if texto is None: return ""
     return re.sub(r'\D', '', str(texto))
 
 def consultar_api_aria(params):
+    """
+    Consulta genérica a /clientes.
+    Soporta parámetros 'q' (texto) e 'ident' (documento exacto).
+    """
     headers = {"x-api-key": ARIA_KEY, "Content-Type": "application/json"}
     try:
         res = requests.get(f"{ARIA_URL_BASE}/clientes", headers=headers, params=params, timeout=8)
@@ -47,21 +53,23 @@ def consultar_api_aria(params):
             if isinstance(d, dict): return [d]
         return []
     except Exception as e:
-        print(f"Error API: {e}")
+        print(f"Error Conexión Aria: {e}")
         return []
 
 def consultar_api_aria_id(cliente_id):
+    """Consulta directa por ID (Endpoint singular /cliente/{id})."""
     headers = {"x-api-key": ARIA_KEY, "Content-Type": "application/json"}
     try:
         res = requests.get(f"{ARIA_URL_BASE}/cliente/{cliente_id}", headers=headers, timeout=5)
         if res.status_code == 200:
             d = res.json()
             if isinstance(d, list): return d
-            if isinstance(d, dict): return [d]
+            if isinstance(d, dict): return [d] # Normaliza respuesta a lista
         return []
     except: return []
 
 def obtener_pedidos(estado="open"):
+    """Trae pedidos de Tiendanube. El filtrado fino se hace después."""
     url = f"https://api.tiendanube.com/v1/{TN_ID}/orders?status={estado}&per_page=50"
     headers = {'Authentication': f'bearer {TN_TOKEN}', 'User-Agent': TN_USER_AGENT}
     try:
@@ -83,18 +91,19 @@ def eliminar_etiqueta(id_pedido, nota_actual):
     requests.put(url, headers=headers, json={"owner_note": nota_limpia})
 
 # ==========================================
-# 📧 GESTOR DE CORREOS
+# 📧 3. GESTOR DE CORREOS
 # ==========================================
 def enviar_notificacion(email_cliente, nombre_cliente, escenario, datos_extra={}):
     if not EMAIL_USER or not EMAIL_PASS:
-        st.warning("⚠️ No se envió mail (Faltan credenciales).")
+        st.warning("⚠️ Correo no enviado: Faltan credenciales.")
         return True 
 
     msg = MIMEMultipart()
     msg['From'] = EMAIL_USER
     msg['To'] = email_cliente
     
-    if escenario == 1: # RECHAZADO
+    # ESCENARIO 1: RECHAZADO (Mora)
+    if escenario == 1:
         msg['Subject'] = "Información importante sobre tu pedido en SSServicios"
         cuerpo = f"""
         Hola {nombre_cliente},<br><br>
@@ -103,7 +112,9 @@ def enviar_notificacion(email_cliente, nombre_cliente, escenario, datos_extra={}
         ¡No te preocupes! Si deseas continuar con la compra, puedes hacerlo abonando con <b>tarjeta de crédito, débito o transferencia bancaria</b>. Por favor, avísanos respondiendo a este correo si prefieres cambiar el medio de pago.<br><br>
         Saludos cordiales,<br>El equipo de SSServicios
         """
-    elif escenario == 2: # DIFERENCIA
+    
+    # ESCENARIO 2: DIFERENCIA (Falta Cupo)
+    elif escenario == 2:
         cupo = datos_extra.get('cupo', 0)
         dif = datos_extra.get('diferencia', 0)
         alias = "TU.ALIAS.AQUI" 
@@ -117,7 +128,9 @@ def enviar_notificacion(email_cliente, nombre_cliente, escenario, datos_extra={}
         Por favor, <b>responde a este correo adjuntando el comprobante de pago</b>.<br><br>
         Saludos,<br>El equipo de SSServicios
         """
-    elif escenario == 3: # APROBADO
+    
+    # ESCENARIO 3: APROBADO
+    elif escenario == 3:
         msg['Subject'] = "¡Felicitaciones! Tu compra fue aprobada ✅"
         cuerpo = f"""
         Hola {nombre_cliente},<br><br>
@@ -137,52 +150,61 @@ def enviar_notificacion(email_cliente, nombre_cliente, escenario, datos_extra={}
     except: return False
 
 # ==========================================
-# 🧠 LÓGICA DE BÚSQUEDA (Cascada Mejorada)
+# 🧠 4. LÓGICA DE BÚSQUEDA (CASCADA)
 # ==========================================
 def buscar_cliente_cascada(nombre_tn, dni_tn, nota_tn):
-    # 1. ID en Nota
-    ids = re.findall(r'\b\d{3,7}\b', str(nota_tn))
-    for pid in ids:
+    
+    # NIVEL 1: ID EN NOTA (Prioridad Máxima)
+    ids_en_nota = re.findall(r'\b\d{3,7}\b', str(nota_tn))
+    for pid in ids_en_nota:
         res = consultar_api_aria_id(pid)
-        if res and res[0].get('cliente_id'): return res[0], f"✅ ID {pid} (Nota)"
+        if res and res[0].get('cliente_id'):
+            return res[0], f"✅ Encontrado por ID en Nota ({pid})"
 
-    # 2. DNI / CUIT (Con fallback)
+    # NIVEL 2: DNI / CUIT (Uso de 'ident' y 'bisturí')
     dni_input = solo_numeros(dni_tn)
-    numeros = []
-    if len(dni_input) > 5: numeros.append(dni_input)
-    if len(dni_input) == 11: numeros.append(dni_input[2:10]) # Extraer DNI de CUIT
+    numeros_a_probar = []
+    
+    # a) Número tal cual
+    if len(dni_input) > 5: numeros_a_probar.append(dni_input)
+    # b) Si es CUIT (11), extraer DNI (8) del medio
+    if len(dni_input) == 11: numeros_a_probar.append(dni_input[2:10])
 
-    for n in numeros:
-        # Intento con IDENT (Exacto)
+    for n in numeros_a_probar:
+        # Intento A: Búsqueda exacta (IDENT) - La más segura
         res = consultar_api_aria({'ident': n})
         if res:
             for c in res:
                 da = solo_numeros(c.get('cliente_dnicuit',''))
-                if n in da or da in n: return c, f"✅ Match IDENT: {n}"
+                if n in da or da in n: return c, f"✅ Encontrado por Documento ({n})"
         
-        # Intento con Q (Texto)
+        # Intento B: Búsqueda texto (Q) - Respaldo
         res_q = consultar_api_aria({'q': n})
         if res_q:
             for c in res_q:
                 da = solo_numeros(c.get('cliente_dnicuit',''))
-                if n in da or da in n: return c, f"✅ Match Q: {n}"
+                if n in da or da in n: return c, f"✅ Encontrado por Documento Q ({n})"
 
-    # 3. Apellido
+    # NIVEL 3: APELLIDO (Último recurso)
     partes = nombre_tn.replace(",","").split()
     if len(partes) >= 1:
         ape = partes[-1]
         if len(ape) > 3:
             res = consultar_api_aria({'q': ape})
             if res:
-                if numeros: # Si había DNI en TN, validar match
-                    dni_obj = numeros[-1]
+                # Si TN tenía DNI, validamos contra eso
+                if numeros_a_probar:
+                    dni_obj = numeros_a_probar[-1]
                     for c in res:
-                        if dni_obj in solo_numeros(c.get('cliente_dnicuit','')): return c, "✅ Apellido + DNI"
-                else: # Validación por nombre
+                        if dni_obj in solo_numeros(c.get('cliente_dnicuit','')): 
+                            return c, "✅ Apellido + Coincidencia DNI"
+                # Si no, validación laxa de nombre
+                else:
                     ptn = set(nombre_tn.lower().split())
                     for c in res:
                         nom_aria = (str(c.get('cliente_nombre',''))+" "+str(c.get('cliente_apellido',''))).lower()
-                        if len(ptn.intersection(set(nom_aria.split()))) >= 2: return c, "✅ Nombre Coincidente"
+                        if len(ptn.intersection(set(nom_aria.split()))) >= 2: 
+                            return c, "✅ Apellido + Nombre Coincidentes"
 
     return None, "❌ No encontrado"
 
@@ -190,117 +212,149 @@ def extraer_productos(pedido):
     return ", ".join([f"{i.get('name')} ({i.get('quantity')})" for i in pedido.get('products', [])])
 
 # ==========================================
-# 🖥️ INTERFAZ WEB
+# 🖥️ 5. INTERFAZ OPERATIVA (STREAMLIT)
 # ==========================================
 st.set_page_config(page_title="Asistente Ventas", page_icon="🤖", layout="wide")
 st.title("🤖 Asistente de Ventas Contrafactura")
+st.markdown("**Bandeja Unificada:** Gestión de financiación y transferencias.")
 
-st.sidebar.header("Panel")
-opcion = st.sidebar.radio("Bandeja:", ["Nuevos", "Pendientes Diferencia"])
-if st.sidebar.button("🔄 Actualizar"): st.rerun()
+# --- SIDEBAR ---
+st.sidebar.header("Panel de Control")
+opcion = st.sidebar.radio("Vista:", ["Nuevos (Bandeja Entrada)", "Pendientes (Diferencia)"])
+if st.sidebar.button("🔄 Actualizar Bandeja"): st.rerun()
 
-modo_pendientes = opcion == "Pendientes Diferencia"
+modo_pendientes = opcion == "Pendientes (Diferencia)"
+# Pedimos 'open' pero filtraremos manualmente abajo
 estado_tn = "any" if modo_pendientes else "open"
 
-with st.spinner('Cargando Tiendanube...'):
+with st.spinner('Sincronizando pedidos...'):
     pedidos_raw = obtener_pedidos(estado_tn)
 
-pedidos = []
+pedidos_visibles = []
+
+# --- FILTROS DE "ESCRITORIO LIMPIO" ---
 if pedidos_raw:
     for p in pedidos_raw:
+        # 1. Filtro Pagados (Tarjeta/MP)
+        if p.get('payment_status') == 'paid': continue 
+        # 2. Filtro Logística (Ya salió)
+        if p.get('shipping_status') in ['shipped', 'picked_up']: continue
+        # 3. Filtro Cancelados
+        if p.get('status') == 'cancelled' or p.get('payment_status') == 'voided': continue
+
+        # --- SELECCIÓN POR ETIQUETA ---
         nota = p.get('owner_note') or ""
         es_espera = TAG_ESPERA in nota
-        if modo_pendientes and es_espera: pedidos.append(p)
-        elif not modo_pendientes and not es_espera: pedidos.append(p)
+        
+        if modo_pendientes and es_espera:
+            pedidos_visibles.append(p)
+        elif not modo_pendientes and not es_espera:
+            pedidos_visibles.append(p)
 
-if not pedidos:
-    st.info("✅ Bandeja al día.")
+# --- VISUALIZACIÓN ---
+if not pedidos_visibles:
+    st.info("✅ ¡Todo limpio! No hay pedidos pendientes de acción.")
 else:
-    st.success(f"Gestión: {len(pedidos)} pedidos")
+    st.success(f"Gestión: {len(pedidos_visibles)} pedidos pendientes.")
 
-    for p in pedidos:
+    for p in pedidos_visibles:
         id_p = p['id']
         nom = p['customer']['name']
         dni = p['customer'].get('identification') or "S/D"
         mail = p['customer'].get('email')
         total = float(p['total'])
         nota = p.get('owner_note', '')
+        gateway = p.get('payment_details', {}).get('method', 'unknown').lower()
         prods = extraer_productos(p)
 
-        with st.expander(f"🛒 #{id_p} | {nom} | ${total:,.0f}", expanded=True):
+        # Distinción Visual de Medio de Pago
+        es_transferencia = 'transfer' in gateway or 'wire' in gateway
+        icono_pago = "🏦" if es_transferencia else "🤝"
+        lbl_pago = "Transferencia" if es_transferencia else "A Convenir/Financiación"
+
+        with st.expander(f"{icono_pago} #{id_p} | {nom} | ${total:,.0f} | {lbl_pago}", expanded=True):
             c1, c2 = st.columns([1, 1])
-            c1.markdown(f"**Items:** {prods}")
-            c1.markdown(f"**Doc:** `{dni}` | **Nota:** {nota}")
+            
+            with c1:
+                st.markdown(f"**Items:** {prods}")
+                st.markdown(f"**Doc TN:** `{dni}`")
+                st.markdown(f"**Nota:** {nota}")
+                if es_transferencia:
+                    st.info("ℹ️ Cliente eligió Transferencia. Verificar si quiere cuotas o pagar total.")
 
             with c2:
-                if st.button(f"🔍 Analizar", key=f"b_{id_p}"):
+                # Botón Único de Análisis (Sirve para ambos casos)
+                if st.button(f"🔍 Analizar Cliente", key=f"btn_{id_p}"):
                     st.session_state['analisis_activo'][id_p] = True
                 
+                # --- LÓGICA DE ANÁLISIS ---
                 if st.session_state['analisis_activo'].get(id_p):
-                    with st.spinner("Consultando..."):
+                    st.markdown("---")
+                    with st.spinner("Consultando Aria..."):
                         cli, msg = buscar_cliente_cascada(nom, dni, nota)
                     
                     if not cli:
                         st.error(msg)
-                        st.info("💡 Buscar ID manual en Aria.")
+                        st.warning("💡 Acción: Buscar ID manual en Aria y agregarlo a la nota.")
                     else:
                         id_aria = cli.get('cliente_id')
-                        # --- EXTRACCIÓN DE DATOS ---
+                        # Extracción segura
                         try: cupo = float(cli.get('clienteScoringFinanciable', 0))
                         except: cupo = 0.0
                         try: saldo = float(cli.get('cliente_saldo', 0))
                         except: saldo = 0.0
-                        # --- NUEVO DATO CLAVE: MESES DE ATRASO ---
                         try: meses_atraso = int(cli.get('cliente_meses_atraso', 0))
                         except: meses_atraso = 0
 
-                        st.success(f"{msg} | ID: **{id_aria}**")
+                        # RESULTADO BÚSQUEDA
+                        st.success(f"{msg}")
+                        st.success(f"🆔 ID RECUPERADO: **{id_aria}**")
                         
                         col_s, col_c = st.columns(2)
                         
-                        # Mostramos el saldo con un indicador de estado
+                        # Semáforo de Saldo (Solo rojo si hay MORA real)
                         lbl_saldo = f"${saldo:,.0f}"
                         if meses_atraso > 0:
-                            col_s.metric("Saldo Vencido", lbl_saldo, f"{meses_atraso} Meses Atraso", delta_color="inverse")
+                            col_s.metric("Estado Deuda", lbl_saldo, f"{meses_atraso} Meses Mora", delta_color="inverse")
                         else:
-                            col_s.metric("Saldo Actual", lbl_saldo, "Al día (Corriente)", delta_color="normal")
+                            col_s.metric("Estado Deuda", lbl_saldo, "Al día (Corriente)", delta_color="normal")
                             
-                        col_c.metric("Cupo Disp.", f"${cupo:,.0f}")
+                        col_c.metric("Cupo Disponible", f"${cupo:,.0f}")
+                        
                         st.markdown("---")
 
-                        # === LÓGICA DE DECISIÓN CORREGIDA ===
+                        # === REGLAS DE DECISIÓN ===
                         
-                        # 🔴 RECHAZADO: SOLO SI TIENE MESES DE ATRASO (> 0)
+                        # 🔴 RECHAZADO: MORA REAL
                         if meses_atraso > 0:
-                            st.error(f"⛔ RECHAZADO: Tiene deuda vencida ({meses_atraso} meses).")
+                            st.error(f"⛔ RECHAZADO: Tiene {meses_atraso} meses de deuda vencida.")
                             if st.button("📧 Enviar Rechazo", key=f"r_{id_p}"):
                                 if enviar_notificacion(mail, nom, 1): st.success("Enviado.")
                         
-                        # 🟢 APROBADO: Si está al día (meses=0) y le da el cupo
+                        # 🟢 APROBADO: AL DÍA + CUPO
                         elif total <= cupo:
-                            st.success("🚀 APROBADO: Al día y con cupo.")
-                            if saldo > 0:
-                                st.caption(f"ℹ️ Nota: Tiene saldo de ${saldo:,.0f} pero es deuda corriente (no vencida).")
+                            st.success("🚀 APROBADO: Cliente al día y con cupo.")
+                            if saldo > 0: st.caption(f"Nota: Saldo de ${saldo:,.0f} es deuda corriente (no vencida).")
 
                             valor_cuota = total / 3
-                            st.code(f"ID: {id_aria}\nImporte: ${valor_cuota:,.2f}\nCuotas: 3")
+                            st.code(f"ID Cliente: {id_aria}\nImporte: ${valor_cuota:,.2f}\nCuotas: 3")
                             
                             if st.button(f"✅ Cargado Manualmente", key=f"ok_{id_p}"):
                                 enviar_notificacion(mail, nom, 3)
-                                st.toast("Notificado.")
+                                st.toast("Cliente notificado.")
                                 del st.session_state['analisis_activo'][id_p]
                                 if modo_pendientes: eliminar_etiqueta(id_p, nota)
                                 st.rerun()
 
-                        # 🟡 DIFERENCIA: Al día pero sin cupo
+                        # 🟡 DIFERENCIA: AL DÍA PERO FALTA CUPO
                         else:
                             dif = total - cupo
-                            st.warning(f"⚠️ FALTA SALDO: Pagar ${dif:,.0f}")
+                            st.warning(f"⚠️ FALTA SALDO: Diferencia ${dif:,.0f}")
                             
                             if st.button(f"📧 Pedir Diferencia", key=f"ask_{id_p}"):
                                 if enviar_notificacion(mail, nom, 2, {'cupo': cupo, 'diferencia': dif}):
                                     actualizar_nota(id_p, nota, TAG_ESPERA)
-                                    st.toast("Enviado.")
+                                    st.toast("Mail enviado.")
                                     del st.session_state['analisis_activo'][id_p]
                                     st.rerun()
 
@@ -313,6 +367,6 @@ else:
                                     eliminar_etiqueta(id_p, nota)
                                     st.rerun()
 
-                    if st.button("Cerrar", key=f"x_{id_p}"):
+                    if st.button("Cerrar Panel", key=f"x_{id_p}"):
                         del st.session_state['analisis_activo'][id_p]
                         st.rerun()
