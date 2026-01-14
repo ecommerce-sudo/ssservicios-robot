@@ -8,7 +8,6 @@ from email.mime.multipart import MIMEMultipart
 # ==========================================
 # ⚙️ 1. CONFIGURACIÓN Y SECRETOS
 # ==========================================
-# Intentamos cargar los secrets. Si faltan, avisamos pero no rompemos la app hasta que se necesiten.
 try:
     TN_TOKEN = st.secrets["TN_TOKEN"]
     TN_ID = st.secrets["TN_ID"]
@@ -72,14 +71,24 @@ def obtener_pedidos(estado="open"):
 def actualizar_nota(id_pedido, nota_actual, nueva_etiqueta):
     url = f"https://api.tiendanube.com/v1/{TN_ID}/orders/{id_pedido}"
     headers = {'Authentication': f'bearer {TN_TOKEN}', 'User-Agent': TN_USER_AGENT}
-    if nueva_etiqueta in nota_actual: return
-    nota_final = f"{nota_actual} {nueva_etiqueta}".strip()
+    
+    # --- CORRECCIÓN DE ERROR (BLINDAJE) ---
+    # Si nota_actual es None (vacio), lo convertimos a string vacio ""
+    nota_str = str(nota_actual) if nota_actual is not None else ""
+    
+    if nueva_etiqueta in nota_str: return
+    
+    nota_final = f"{nota_str} {nueva_etiqueta}".strip()
     requests.put(url, headers=headers, json={"owner_note": nota_final})
 
 def eliminar_etiqueta(id_pedido, nota_actual):
     url = f"https://api.tiendanube.com/v1/{TN_ID}/orders/{id_pedido}"
     headers = {'Authentication': f'bearer {TN_TOKEN}', 'User-Agent': TN_USER_AGENT}
-    nota_limpia = nota_actual.replace(TAG_ESPERA, "").strip()
+    
+    # --- CORRECCIÓN DE ERROR (BLINDAJE) ---
+    nota_str = str(nota_actual) if nota_actual is not None else ""
+    
+    nota_limpia = nota_str.replace(TAG_ESPERA, "").strip()
     requests.put(url, headers=headers, json={"owner_note": nota_limpia})
 
 # ==========================================
@@ -113,8 +122,11 @@ def enviar_notificacion(email_cliente, nombre_cliente, escenario, datos_extra={}
     elif escenario == 2: # DIFERENCIA
         cupo = datos_extra.get('cupo', 0)
         dif = datos_extra.get('diferencia', 0)
+        
+        # ⚠️⚠️⚠️ ¡EDITA ESTOS DATOS ANTES DE GUARDAR! ⚠️⚠️⚠️
         alias = "TU.ALIAS.AQUI" 
         cbu = "0000000000000000000000" 
+        
         msg['Subject'] = "Acción requerida: Tu pedido en SSServicios (Cupo Disponible)"
         cuerpo = f"""
         Hola {nombre_cliente},<br><br>
@@ -157,8 +169,12 @@ def enviar_notificacion(email_cliente, nombre_cliente, escenario, datos_extra={}
 # 🧠 4. LÓGICA DE BÚSQUEDA (CASCADA)
 # ==========================================
 def buscar_cliente_cascada(nombre_tn, dni_tn, nota_tn):
+    
+    # Protegemos la nota por si viene None
+    nota_segura = str(nota_tn) if nota_tn is not None else ""
+
     # NIVEL 1: ID EN NOTA
-    ids_en_nota = re.findall(r'\b\d{3,7}\b', str(nota_tn))
+    ids_en_nota = re.findall(r'\b\d{3,7}\b', nota_segura)
     for pid in ids_en_nota:
         res = consultar_api_aria_id(pid)
         if res and res[0].get('cliente_id'): return res[0], f"✅ ID {pid} (Nota)"
@@ -266,6 +282,8 @@ if pedidos_raw:
         if p.get('shipping_status') in ['shipped', 'picked_up']: continue
         if p.get('status') == 'cancelled' or p.get('payment_status') == 'voided': continue
 
+        # --- CORRECCIÓN DE LECTURA (BLINDAJE) ---
+        # Usamos 'or ""' para asegurarnos que nunca sea None
         nota = p.get('owner_note') or ""
         es_espera = TAG_ESPERA in nota
         
@@ -284,7 +302,9 @@ else:
         dni = p['customer'].get('identification') or "S/D"
         mail = p['customer'].get('email')
         total = float(p['total'])
-        nota = p.get('owner_note', '')
+        # --- CORRECCIÓN DE LECTURA ---
+        nota = p.get('owner_note') or ""
+        
         gateway = p.get('payment_details', {}).get('method', 'unknown').lower()
         prods = extraer_productos(p)
 
