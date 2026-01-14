@@ -106,6 +106,9 @@ def hay_coincidencia_palabras(texto_aria, texto_tn):
     palabras_tn = {p for p in palabras_tn if len(p) > 2}
     return len(palabras_aria.intersection(palabras_tn)) > 0
 
+# ==========================================
+# 🕵️ LÓGICA DE BÚSQUEDA (MEJORADA)
+# ==========================================
 def buscar_cliente(nombre_tn, dni_tn, nota_tn):
     debug_log = []
     
@@ -114,57 +117,36 @@ def buscar_cliente(nombre_tn, dni_tn, nota_tn):
     
     debug_log.append(f"🔎 INPUT: TN_DNI='{dni_tn_numeros}' | TN_NOMBRE='{nombre_tn_limpio}'")
 
-    # =========================================================================
     # 1. ID EN NOTA (Prioridad Máxima)
-    # =========================================================================
     match = re.search(r'\b\d{3,6}\b', str(nota_tn))
     if match:
         posible_id = match.group()
         res = consultar_api_aria(f"cliente/{posible_id}")
         if res and isinstance(res, list) and len(res) > 0:
-            cliente = res[0]
-            
-            dni_aria = solo_numeros(cliente.get('cliente_dnicuit',''))
-            nombre_completo_aria = f"{cliente.get('cliente_nombre','')} {cliente.get('cliente_apellido','')}"
-            
-            # Validación flexible (DNI o Nombre)
-            if (dni_tn_numeros in dni_aria or dni_aria in dni_tn_numeros):
-                 return cliente, f"✅ ID {posible_id} confirmado por DNI", debug_log
-            elif hay_coincidencia_palabras(nombre_completo_aria, nombre_tn_limpio):
-                 return cliente, f"✅ ID {posible_id} confirmado por Nombre", debug_log
-            else:
-                 return cliente, f"⚠️ ID {posible_id} en Nota (Datos difieren)", debug_log
+            # Si está el ID en la nota, confiamos ciegamente
+            return res[0], f"✅ ID {posible_id} forzado desde Nota", debug_log
 
-    # =========================================================================
-    # 2. BÚSQUEDA DIRECTA DNI (El que funcionó)
-    # =========================================================================
+    # 2. BÚSQUEDA DIRECTA DNI (Flexible)
     if len(dni_tn_numeros) > 5:
-        # Buscamos en la API
         res_dni = consultar_api_aria(f"clientes?q={dni_tn_numeros}")
-        
         debug_log.append(f"📡 API Query DNI: {len(res_dni)} resultados")
         
         if res_dni and len(res_dni) > 0:
-            candidato = res_dni[0] # Tomamos el primero
+            candidato = res_dni[0]
             
-            # --- VALIDACIÓN FINAL: ¿NUMERO O NOMBRE? ---
             dni_aria = solo_numeros(candidato.get('cliente_dnicuit',''))
-            nombre_aria_full = f"{candidato.get('cliente_nombre','')} {candidato.get('cliente_apellido','')}"
             
             match_dni = (dni_tn_numeros in dni_aria) or (dni_aria in dni_tn_numeros)
-            match_nombre = hay_coincidencia_palabras(nombre_aria_full, nombre_tn_limpio)
             
             if match_dni:
-                return candidato, "✅ Encontrado por DNI (Match Numérico)", debug_log
-            elif match_nombre:
-                # AQUÍ ESTÁ EL CAMBIO: Si el DNI falló visualmente, pero el NOMBRE coincide -> VERDE.
-                return candidato, "✅ Encontrado por DNI (Validado por Nombre)", debug_log
+                return candidato, "✅ Encontrado por DNI (Match Exacto)", debug_log
             else:
-                return candidato, "⚠️ Encontrado por API (DNI/Nombre difieren)", debug_log
+                # Si la API lo trajo pero los datos no coinciden visualmente (ej. campo vacío en Aria)
+                # Lo devolvemos igual con advertencia.
+                msj = f"⚠️ Encontrado por API (DNI no coincide visualmente)"
+                return candidato, msj, debug_log
 
-    # =========================================================================
     # 3. BÚSQUEDA POR APELLIDO (Plan Respaldo)
-    # =========================================================================
     partes_nombre = nombre_tn.split()
     if len(partes_nombre) >= 1:
         apellido_tn = partes_nombre[-1].lower() 
@@ -300,7 +282,7 @@ else:
                         cupo = float(cliente_aria.get('clienteScoringFinanciable', 0))
                         saldo = float(cliente_aria.get('cliente_saldo', 0))
                         
-                        # LOGICA DE MENSAJE VERDE/AMARILLO
+                        # MENSAJES DE ESTADO
                         if "⚠️" in metodo_hallazgo:
                             st.warning(f"{metodo_hallazgo}")
                         else:
