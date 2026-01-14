@@ -1,71 +1,62 @@
 import streamlit as st
 import requests
 import re
-import urllib.parse
-from datetime import datetime, timezone
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 
 # ==========================================
-# ⚙️ CONFIGURACIÓN SEGURA
+# ⚙️ CONFIGURACIÓN Y SECRETS
 # ==========================================
 try:
     TN_TOKEN = st.secrets["TN_TOKEN"]
     TN_ID = st.secrets["TN_ID"]
     ARIA_KEY = st.secrets["ARIA_KEY"]
+    # Si no configuras el mail, el sistema avisa pero no falla
+    EMAIL_USER = st.secrets.get("EMAIL_USER", "")
+    EMAIL_PASS = st.secrets.get("EMAIL_PASS", "")
 except FileNotFoundError:
-    st.error("⚠️ ERROR CRÍTICO: No se configuraron las claves secretas (Secrets).")
+    st.error("⚠️ ERROR: No se encontró el archivo de secretos (.streamlit/secrets.toml).")
     st.stop()
 except KeyError as e:
-    st.error(f"⚠️ FALTA UNA CLAVE: No encontré {e} en los Secrets.")
+    st.error(f"⚠️ FALTA CLAVE: {e}")
     st.stop()
 
 # Configuración fija
 TN_USER_AGENT = "RobotWeb (24705)"
 ARIA_URL_BASE = "https://api.anatod.ar/api"
-ARIA_USUARIO_ID = 374
 TAG_ESPERA = "#ESPERANDO_DIFERENCIA"
-CUOTAS_A_GENERAR = 3
 
-# ==========================================
-# 🧠 MEMORIA DE SESIÓN
-# ==========================================
 if 'analisis_activo' not in st.session_state:
     st.session_state['analisis_activo'] = {}
 
 # ==========================================
-# 🔌 FUNCIONES DE CONEXIÓN
+# 🔌 FUNCIONES DE CONEXIÓN (Low Level)
 # ==========================================
 def solo_numeros(texto):
+    """Elimina todo lo que no sea dígito 0-9"""
     if texto is None: return ""
     return re.sub(r'\D', '', str(texto))
 
 def consultar_api_aria(endpoint):
     """
-    Conecta con la API y extrae la lista real de datos,
-    manejando la estructura de paginación {'data': [...]}.
+    Conecta a Aria y maneja la estructura de respuesta.
+    Soporta respuestas directas [], listas dentro de 'data', o dict único.
     """
     headers = {"x-api-key": ARIA_KEY, "Content-Type": "application/json"}
     try:
-        # Añadimos verify=False si hay problemas de certificados, pero intentamos normal primero
-        res = requests.get(f"{ARIA_URL_BASE}/{endpoint}", headers=headers)
-        
+        res = requests.get(f"{ARIA_URL_BASE}/{endpoint}", headers=headers, timeout=8)
         if res.status_code == 200:
-            respuesta_json = res.json()
-            
-            # 1. CASO PAGINACIÓN (La estructura que descubrimos)
-            if isinstance(respuesta_json, dict) and "data" in respuesta_json:
-                return respuesta_json["data"]
-            
-            # 2. CASO LISTA DIRECTA (Por si acaso otros endpoints son distintos)
-            if isinstance(respuesta_json, list):
-                return respuesta_json
-            
-            # 3. CASO OBJETO ÚNICO (Convertimos a lista para estandarizar)
-            if isinstance(respuesta_json, dict):
-                return [respuesta_json]
-                
+            d = res.json()
+            # Caso 1: Paginación moderna de Laravel { data: [...] }
+            if isinstance(d, dict) and "data" in d: return d["data"]
+            # Caso 2: Lista directa [...]
+            if isinstance(d, list): return d
+            # Caso 3: Objeto único {...} -> Lo metemos en lista
+            if isinstance(d, dict): return [d]
         return []
     except Exception as e:
-        print(f"Error API: {e}")
+        print(f"Error conexión Aria: {e}")
         return []
 
 def obtener_pedidos(estado="open"):
@@ -81,186 +72,318 @@ def actualizar_nota(id_pedido, nota_actual, nueva_etiqueta):
     headers = {'Authentication': f'bearer {TN_TOKEN}', 'User-Agent': TN_USER_AGENT}
     if nueva_etiqueta in nota_actual: return
     nota_final = f"{nota_actual} {nueva_etiqueta}".strip()
-    payload = {"owner_note": nota_final}
-    requests.put(url, headers=headers, json=payload)
+    requests.put(url, headers=headers, json={"owner_note": nota_final})
 
 def eliminar_etiqueta(id_pedido, nota_actual):
     url = f"https://api.tiendanube.com/v1/{TN_ID}/orders/{id_pedido}"
     headers = {'Authentication': f'bearer {TN_TOKEN}', 'User-Agent': TN_USER_AGENT}
     nota_limpia = nota_actual.replace(TAG_ESPERA, "").strip()
-    payload = {"owner_note": nota_limpia}
-    requests.put(url, headers=headers, json=payload)
-
-def cargar_deuda_aria(id_cliente, monto_total, orden_id, lista_productos):
-    valor_cuota = round(monto_total / CUOTAS_A_GENERAR, 2)
-    descripcion = f"Compra en TN #{orden_id}: {lista_productos}"
-    if len(descripcion) > 250: descripcion = descripcion[:247] + "..."
-
-    url = f"{ARIA_URL_BASE}/adicional"
-    headers = {"x-api-key": ARIA_KEY, "Content-Type": "application/json", "Accept": "application/json"}
-    
-    payload = {
-        "adicional_cliente": id_cliente,
-        "adicional_descripcion": descripcion,
-        "adicional_tipo": "M",          
-        "adicional_moneda": "ML",       
-        "adicional_importe": str(valor_cuota),
-        "adicional_meses": str(CUOTAS_A_GENERAR), 
-        "adicional_cotizacion": "0",
-        "adicional_usuario": ARIA_USUARIO_ID 
-    }
-    
-    try:
-        res = requests.post(url, headers=headers, json=payload)
-        return res.status_code in [200, 201], res.text
-    except Exception as e: 
-        return False, str(e)
+    requests.put(url, headers=headers, json={"owner_note": nota_limpia})
 
 # ==========================================
-# 🕵️ LÓGICA DE BÚSQUEDA
+# 📧 GESTOR DE CORREOS (Textos Aprobados)
 # ==========================================
-def buscar_cliente(nombre_tn, dni_tn, nota_tn):
-    debug_log = []
-    dni_tn_numeros = solo_numeros(dni_tn)
+def enviar_notificacion(email_cliente, nombre_cliente, escenario, datos_extra={}):
+    if not EMAIL_USER or not EMAIL_PASS:
+        st.warning("⚠️ Correo no enviado: Faltan credenciales en secrets.")
+        return True 
 
-    # 1. ID EN NOTA (Búsqueda Directa)
-    match = re.search(r'\b\d{3,6}\b', str(nota_tn))
-    if match:
-        posible_id = match.group()
-        # Al buscar por ID directo, usamos el endpoint singular
-        res = consultar_api_aria(f"cliente/{posible_id}")
-        if res and len(res) > 0:
-            return res[0], f"✅ ID {posible_id} (Nota)", debug_log
+    msg = MIMEMultipart()
+    msg['From'] = EMAIL_USER
+    msg['To'] = email_cliente
+    
+    # 🔴 ESCENARIO 1: RECHAZADO
+    if escenario == 1:
+        msg['Subject'] = "Información importante sobre tu pedido en SSServicios"
+        cuerpo = f"""
+        Hola {nombre_cliente},<br><br>
+        Muchas gracias por tu compra en nuestra tienda online.<br><br>
+        <b>Te informamos que hemos realizado el análisis crediticio correspondiente y, por el momento, no es posible procesar la financiación de este pedido a través de tu factura de servicios; podés probar nuevamente en unos meses.</b><br><br>
+        ¡No te preocupes! Si deseas continuar con la compra, puedes hacerlo abonando con <b>tarjeta de crédito, débito o transferencia bancaria</b>. Por favor, avísanos respondiendo a este correo si prefieres cambiar el medio de pago.<br><br>
+        Quedamos a tu disposición.<br><br>
+        Saludos cordiales,<br>El equipo de SSServicios
+        """
 
-    # 2. BÚSQUEDA DIRECTA DNI
-    if len(dni_tn_numeros) > 5:
-        # endpoint plural 'clientes?q=...' devuelve estructura paginada que ahora manejamos bien
-        res_dni = consultar_api_aria(f"clientes?q={dni_tn_numeros}")
+    # 🟡 ESCENARIO 2: DIFERENCIA (FALTA CUPO)
+    elif escenario == 2:
+        cupo = datos_extra.get('cupo', 0)
+        dif = datos_extra.get('diferencia', 0)
+        # --- DATOS BANCARIOS ---
+        alias = "TU.ALIAS.AQUI" # <--- CAMBIAR
+        cbu = "0000000000000000000000" # <--- CAMBIAR
         
-        if res_dni and len(res_dni) > 0:
-            candidato = res_dni[0]
-            dni_aria = solo_numeros(candidato.get('cliente_dnicuit',''))
-            
-            # Verificación flexible
-            if (dni_tn_numeros in dni_aria) or (dni_aria in dni_tn_numeros):
-                return candidato, "✅ Encontrado por DNI", debug_log
+        msg['Subject'] = "Acción requerida: Tu pedido en SSServicios (Cupo Disponible)"
+        cuerpo = f"""
+        Hola {nombre_cliente},<br><br>
+        ¡Tenemos buenas noticias! Hemos verificado tu cuenta y tienes un cupo disponible de <b>${cupo:,.0f}</b> para financiar tu compra en cuotas sin interés.<br><br>
+        Como el total de tu pedido supera ese monto, para aprobar el envío necesitamos que abones la diferencia de <b>${dif:,.0f}</b> mediante transferencia bancaria.<br><br>
+        <b>Datos para la transferencia:</b><br>
+        <ul>
+            <li><b>Alias:</b> {alias}</li>
+            <li><b>CBU:</b> {cbu}</li>
+        </ul>
+        Por favor, <b>responde a este correo adjuntando el comprobante de pago</b>. Una vez recibido, procesaremos el resto de la compra en tu próxima factura y despacharemos tu pedido.<br><br>
+        ¡Esperamos tu confirmación!<br>Saludos,<br>El equipo de SSServicios
+        """
 
-    # 3. BÚSQUEDA POR APELLIDO
-    partes_nombre = nombre_tn.split()
-    if len(partes_nombre) >= 1:
-        apellido_tn = partes_nombre[-1].lower() 
-        if len(apellido_tn) > 2:
-            res_ape = consultar_api_aria(f"clientes?q={apellido_tn}")
-            
-            for c in res_ape:
-                dni_aria = solo_numeros(c.get('cliente_dnicuit',''))
-                if dni_tn_numeros and dni_aria and (dni_tn_numeros in dni_aria):
-                    return c, "✅ Apellido > Match DNI", debug_log
+    # 🟢 ESCENARIO 3: APROBADO
+    elif escenario == 3:
+        msg['Subject'] = "¡Felicitaciones! Tu compra fue aprobada ✅"
+        cuerpo = f"""
+        Hola {nombre_cliente},<br><br>
+        Te confirmamos que tu solicitud de financiación ha sido <b>aprobada exitosamente</b>.<br><br>
+        El importe de tu compra se verá reflejado en tu próxima factura de SSServicios. Tal como se indicó en la tienda, el cobro se realizará en <b>3 cuotas sin interés</b>.<br><br>
+        Ya estamos preparando tu pedido. Pronto recibirás novedades sobre el envío o retiro.<br><br>
+        ¡Muchas gracias por confiar en nosotros!<br>Saludos,<br>El equipo de SSServicios
+        """
 
-    return None, None, debug_log
+    msg.attach(MIMEText(cuerpo, 'html'))
+    try:
+        server = smtplib.SMTP_SSL('smtp.gmail.com', 465)
+        server.login(EMAIL_USER, EMAIL_PASS)
+        server.sendmail(EMAIL_USER, email_cliente, msg.as_string())
+        server.quit()
+        return True
+    except Exception as e:
+        st.error(f"Error técnico enviando mail: {e}")
+        return False
+
+# ==========================================
+# 🧠 LÓGICA DE BÚSQUEDA: "CASCADA BLINDADA"
+# ==========================================
+def buscar_cliente_cascada(nombre_tn, dni_tn, nota_tn):
+    debug_info = [] # Para ver qué pasó internamente si falla
+    
+    # --- 1️⃣ NIVEL 1: ID EN NOTA (HARD MATCH) ---
+    # Busca cualquier secuencia de 3 a 7 dígitos en la nota
+    posibles_ids = re.findall(r'\b\d{3,7}\b', str(nota_tn))
+    for pid in posibles_ids:
+        res = consultar_api_aria(f"cliente/{pid}")
+        # Si la API devuelve una lista con datos y tiene un ID válido
+        if res and len(res) > 0 and res[0].get('cliente_id'):
+            return res[0], f"✅ ID {pid} encontrado en nota"
+
+    # --- 2️⃣ NIVEL 2: DNI / CUIT (SMART MATCH) ---
+    dni_input_limpio = solo_numeros(dni_tn)
+    lista_intentos = []
+
+    if len(dni_input_limpio) > 5:
+        # Intento A: Lo que escribió el usuario tal cual (limpio)
+        lista_intentos.append(dni_input_limpio)
+        
+        # Intento B: Si es CUIT (11 dígitos), extraemos el DNI del medio
+        # Estructura XY-DNI-Z. Eliminamos 2 chars al inicio y 1 al final.
+        if len(dni_input_limpio) == 11:
+            dni_puro = dni_input_limpio[2:10]
+            lista_intentos.append(dni_puro)
+            
+        for intento in lista_intentos:
+            res = consultar_api_aria(f"clientes?q={intento}")
+            if res:
+                # VALIDACIÓN CRUZADA:
+                # Chequeamos que el número buscado esté realmente en los datos de Aria
+                for candidato in res:
+                    dni_aria = solo_numeros(candidato.get('cliente_dnicuit', ''))
+                    # ¿El intento está en Aria O Aria está en el intento?
+                    if (intento in dni_aria) or (dni_aria in intento):
+                        return candidato, f"✅ Encontrado por Doc: {intento}"
+
+    # --- 3️⃣ NIVEL 3: NOMBRE (FUZZY MATCH) ---
+    # Busca por apellido (última palabra) y valida cruzando palabras
+    partes = nombre_tn.replace(",","").split()
+    if len(partes) >= 1:
+        apellido = partes[-1]
+        if len(apellido) > 2:
+            res = consultar_api_aria(f"clientes?q={apellido}")
+            if res:
+                palabras_tn = set(nombre_tn.lower().split())
+                
+                for c in res:
+                    # Construimos nombre completo de Aria
+                    nombre_aria = (str(c.get('cliente_nombre','')) + " " + str(c.get('cliente_apellido',''))).lower()
+                    palabras_aria = set(nombre_aria.split())
+                    
+                    # Intersección de palabras
+                    coincidencias = palabras_tn.intersection(palabras_aria)
+                    
+                    # Criterio: Al menos 2 palabras coinciden (Nombre + Apellido)
+                    # O si el nombre TN es muy corto, coincidencia total
+                    if len(coincidencias) >= 2:
+                        return c, "✅ Encontrado por Nombre (Coincidencia)"
+
+    return None, "❌ No encontrado (Revisar manualmente)"
 
 def extraer_productos(pedido):
-    lista = []
-    for item in pedido.get('products', []):
-        lista.append(f"{item.get('name')} ({item.get('quantity')})")
-    return ", ".join(lista)
+    items = [f"{i.get('name')} x{i.get('quantity')}" for i in pedido.get('products', [])]
+    return ", ".join(items)
 
 # ==========================================
-# 🖥️ INTERFAZ WEB
+# 🖥️ INTERFAZ DE USUARIO (OPERADOR)
 # ==========================================
+st.set_page_config(page_title="Asistente de Ventas", page_icon="🤖", layout="wide")
 
-st.set_page_config(page_title="Robot Cobranzas SSS", page_icon="🤖", layout="wide")
-st.title("🤖 SSServicios - Robot de Cobranzas")
+st.title("🤖 Asistente de Ventas Contrafactura")
+st.markdown("**Modo:** Validación y Asistencia de Carga.")
 
+# --- SIDEBAR ---
 st.sidebar.header("Panel de Control")
-opcion = st.sidebar.radio("Ver:", ["Nuevos (Abiertos)", "Pendientes (Seguimiento)"])
-if st.sidebar.button("🔄 Actualizar Lista"): st.rerun()
+opcion = st.sidebar.radio("Bandeja de Trabajo:", ["Nuevos (Abiertos)", "Pendientes (Diferencia)"])
 
-modo_pendientes = opcion == "Pendientes (Seguimiento)"
-estado_api = "any" if modo_pendientes else "open"
+if st.sidebar.button("🔄 Actualizar Pedidos"):
+    st.cache_data.clear()
+    st.rerun()
 
+modo_pendientes = opcion == "Pendientes (Diferencia)"
+estado_tn = "any" if modo_pendientes else "open"
+
+# --- CARGA DE DATOS ---
 with st.spinner('Conectando con Tiendanube...'):
-    pedidos = obtener_pedidos(estado_api)
+    pedidos_raw = obtener_pedidos(estado_tn)
 
+# Filtrado local de etiquetas
 pedidos_filtrados = []
-if pedidos:
-    for p in pedidos:
+if pedidos_raw:
+    for p in pedidos_raw:
         nota = p.get('owner_note') or ""
         es_espera = TAG_ESPERA in nota
-        if modo_pendientes and es_espera: pedidos_filtrados.append(p)
-        elif not modo_pendientes and not es_espera: pedidos_filtrados.append(p)
+        
+        if modo_pendientes and es_espera:
+            pedidos_filtrados.append(p)
+        elif not modo_pendientes and not es_espera:
+            pedidos_filtrados.append(p)
 
+# --- VISUALIZACIÓN ---
 if not pedidos_filtrados:
-    st.info("💤 No hay pedidos en esta bandeja.")
+    st.info("✅ Bandeja al día. No hay pedidos pendientes de acción.")
 else:
-    st.success(f"Bandeja: {len(pedidos_filtrados)} pedidos")
+    st.success(f"Gestión: {len(pedidos_filtrados)} pedidos en bandeja.")
 
     for p in pedidos_filtrados:
         id_p = p['id']
         nombre = p['customer']['name']
-        dni_tn = p['customer'].get('identification')
+        dni_tn = p['customer'].get('identification') or "No indica"
+        email_tn = p['customer'].get('email')
         total = float(p['total'])
         nota = p.get('owner_note', '')
         prod_str = extraer_productos(p)
 
-        with st.expander(f"🛒 #{id_p} | {nombre} | ${total:,.0f}", expanded=True):
-            col1, col2 = st.columns(2)
-            with col1:
-                st.write(f"**Productos:** {prod_str}")
-                st.write(f"**DNI (TN):** {dni_tn}")
-                
-            with col2:
+        # Tarjeta del Pedido
+        with st.expander(f"🛒 Pedido #{id_p} | {nombre} | ${total:,.0f}", expanded=True):
+            col_info, col_action = st.columns([1, 1])
+            
+            with col_info:
+                st.markdown(f"**Items:** {prod_str}")
+                st.markdown(f"**DNI/CUIT:** `{dni_tn}`")
+                st.markdown(f"**Nota:** {nota}")
+            
+            with col_action:
                 mostrar_analisis = False
+                
+                # Botón de activación
                 if st.button(f"🔍 Analizar Cliente", key=f"btn_{id_p}"):
                     st.session_state['analisis_activo'][id_p] = True
                     mostrar_analisis = True
                 elif st.session_state['analisis_activo'].get(id_p):
                     mostrar_analisis = True
 
+                # LÓGICA DE ANÁLISIS
                 if mostrar_analisis:
-                    cliente_aria, metodo, debug_log = buscar_cliente(nombre, dni_tn, nota)
-                    
-                    if not cliente_aria:
-                        st.error("❌ No encontrado.")
+                    st.markdown("---")
+                    with st.spinner("Consultando Aria..."):
+                        cliente, mensaje_hallazgo = buscar_cliente_cascada(nombre, dni_tn, nota)
+
+                    if not cliente:
+                        st.error(mensaje_hallazgo)
+                        st.warning("💡 Acción Manual: Busca el ID en Aria y agrégalo a la nota del pedido.")
                     else:
-                        # === EXTRACCIÓN DE DATOS SEGURA ===
-                        # Ahora sabemos los nombres exactos gracias a tu captura
-                        id_aria = cliente_aria.get('cliente_id')
-                        
-                        # Convertimos los strings "111920.00" a float
-                        try:
-                            cupo = float(cliente_aria.get('clienteScoringFinanciable', 0))
+                        # Extracción de datos
+                        id_aria = cliente.get('cliente_id', 'Error')
+                        try: cupo = float(cliente.get('clienteScoringFinanciable', 0))
                         except: cupo = 0.0
-                            
-                        try:
-                            saldo = float(cliente_aria.get('cliente_saldo', 0))
+                        try: saldo = float(cliente.get('cliente_saldo', 0))
                         except: saldo = 0.0
 
-                        st.success(f"{metodo}")
-                        st.success(f"🆔 ID Cliente: **{id_aria}**")
-                        st.info(f"💰 Cupo: **${cupo:,.0f}** | Saldo: ${saldo:,.0f}")
+                        # Resultado de Búsqueda
+                        st.success(f"{mensaje_hallazgo} | **ID: {id_aria}**")
+                        
+                        # Métricas
+                        c_saldo, c_cupo = st.columns(2)
+                        c_saldo.metric("Saldo Deuda", f"${saldo:,.0f}", delta_color="inverse")
+                        c_cupo.metric("Cupo Disponible", f"${cupo:,.0f}")
 
-                        # LÓGICA DE APROBACIÓN
-                        if saldo > 100: # Tolerancia de $100 por si quedan decimales
-                            st.error(f"⛔ RECHAZADO: Tiene deuda (${saldo:,.0f}).")
+                        # SEMÁFORO DE DECISIÓN
+                        
+                        # 🔴 CASO 1: DEUDA (RECHAZADO)
+                        if saldo > 100: 
+                            st.error("⛔ RECHAZADO: Cliente con deuda vigente.")
+                            st.info("No se puede financiar. Envía el aviso de rechazo.")
+                            
+                            if st.button("📧 Enviar Rechazo y Avisar", key=f"mail_r_{id_p}"):
+                                if enviar_notificacion(email_tn, nombre, 1):
+                                    st.success("✅ Correo enviado exitosamente.")
+                        
+                        # 🟢 CASO 3: APROBADO (TOTAL)
                         elif total <= cupo:
-                            st.success("🚀 APROBADO: Cupo suficiente.")
-                            if st.button(f"💸 COBRAR AHORA", key=f"pagar_{id_p}"):
-                                ok, msg = cargar_deuda_aria(id_aria, total, id_p, prod_str)
-                                if ok:
-                                    st.toast("✅ ¡Cobrado!", icon="🎉")
-                                    del st.session_state['analisis_activo'][id_p]
-                                    if modo_pendientes: eliminar_etiqueta(id_p, nota)
-                                    st.rerun()
-                                else:
-                                    st.error(f"Error API: {msg}")
-                        else:
-                            st.warning(f"⚠️ FALTA SALDO: ${total-cupo:,.0f}")
-                            if st.button("📌 Pasar a SEGUIMIENTO", key=f"seg_{id_p}"):
-                                actualizar_nota(id_p, nota, TAG_ESPERA)
+                            st.success("🚀 APROBADO: El cupo cubre el total.")
+                            
+                            st.markdown("### 📝 Instrucción de Carga Manual")
+                            st.info("Copia estos datos exactos en Aria (Ítem Adicional):")
+                            
+                            valor_cuota = total / 3
+                            st.code(f"""
+                            ID Cliente: {id_aria}
+                            ---
+                            Importe (Valor Cuota): ${valor_cuota:,.2f}
+                            Cantidad Cuotas: 3
+                            Descripcion: Compra TN #{id_p}
+                            """)
+                            
+                            if st.button(f"✅ Ya lo cargué manualmente", key=f"confirm_{id_p}"):
+                                # Enviamos mail de éxito
+                                if enviar_notificacion(email_tn, nombre, 3):
+                                    st.toast("Notificación enviada al cliente.")
+                                
+                                # Limpieza
                                 del st.session_state['analisis_activo'][id_p]
+                                if modo_pendientes: eliminar_etiqueta(id_p, nota)
                                 st.rerun()
 
-                    if st.button("Cerrar", key=f"c_{id_p}"):
+                        # 🟡 CASO 2: DIFERENCIA (PENDIENTE)
+                        else:
+                            dif = total - cupo
+                            st.warning(f"⚠️ FALTA SALDO: El cliente debe pagar ${dif:,.0f}")
+                            
+                            # Opción A: Pedir la plata
+                            if st.button(f"📧 Pedir Diferencia (${dif:,.0f})", key=f"ask_{id_p}"):
+                                datos = {'cupo': cupo, 'diferencia': dif}
+                                if enviar_notificacion(email_tn, nombre, 2, datos):
+                                    actualizar_nota(id_p, nota, TAG_ESPERA)
+                                    st.toast("Correo enviado. Pedido pasado a 'Pendientes'.")
+                                    del st.session_state['analisis_activo'][id_p]
+                                    st.rerun()
+                            
+                            # Opción B (Solo en pendientes): Cargar el cupo si ya pagó
+                            if modo_pendientes:
+                                st.markdown("---")
+                                st.markdown("### ¿Ya pagó la diferencia?")
+                                st.info("Carga el monto financiado (Cupo) en Aria:")
+                                
+                                valor_cuota = cupo / 3
+                                st.code(f"""
+                                ID Cliente: {id_aria}
+                                ---
+                                Importe (Valor Cuota): ${valor_cuota:,.2f}
+                                Cantidad Cuotas: 3
+                                """)
+                                
+                                if st.button(f"✅ Ya cargué el Cupo", key=f"ok_partial_{id_p}"):
+                                    enviar_notificacion(email_tn, nombre, 3)
+                                    st.toast("Proceso finalizado.")
+                                    eliminar_etiqueta(id_p, nota)
+                                    del st.session_state['analisis_activo'][id_p]
+                                    st.rerun()
+
+                    # Botón cerrar
+                    if st.button("Cerrar Panel", key=f"close_{id_p}"):
                         del st.session_state['analisis_activo'][id_p]
                         st.rerun()
