@@ -95,8 +95,8 @@ def cargar_deuda_aria(id_cliente, monto_total, orden_id, lista_productos):
 
 # --- 🧠 HERRAMIENTAS DE LIMPIEZA ---
 def solo_numeros(texto):
-    """Elimina todo lo que no sea un dígito 0-9"""
-    if not texto: return ""
+    """Elimina todo lo que no sea un dígito 0-9. Maneja Nones y tipos raros."""
+    if texto is None: return ""
     return re.sub(r'\D', '', str(texto))
 
 def hay_coincidencia_palabras(texto_aria, texto_tn):
@@ -110,14 +110,14 @@ def hay_coincidencia_palabras(texto_aria, texto_tn):
 def buscar_cliente(nombre_tn, dni_tn, nota_tn):
     debug_log = []
     
-    # 1. PREPARACIÓN DE DATOS (LIMPIEZA NUCLEAR)
-    dni_tn_numeros = solo_numeros(dni_tn)
+    # LIMPIEZA INICIAL
+    dni_tn_limpio = solo_numeros(dni_tn)
     nombre_tn_limpio = nombre_tn.strip().lower()
     
-    debug_log.append(f"🔎 TN Input: Nombre='{nombre_tn}', DNI='{dni_tn}' -> Clean='{dni_tn_numeros}'")
+    debug_log.append(f"🔎 INPUT: TN_DNI='{dni_tn_limpio}' | TN_NOMBRE='{nombre_tn_limpio}'")
 
     # =========================================================================
-    # A. ID EN NOTA (Prioridad Máxima)
+    # 1. ID EN NOTA (Prioridad Máxima)
     # =========================================================================
     match = re.search(r'\b\d{3,6}\b', str(nota_tn))
     if match:
@@ -125,77 +125,63 @@ def buscar_cliente(nombre_tn, dni_tn, nota_tn):
         res = consultar_api_aria(f"cliente/{posible_id}")
         if res and isinstance(res, list) and len(res) > 0:
             cliente = res[0]
-            dni_aria_numeros = solo_numeros(cliente.get('cliente_dnicuit',''))
-            nombre_completo_aria = f"{cliente.get('cliente_nombre','')} {cliente.get('cliente_apellido','')}"
+            # Extraemos datos ARIA convirtiendo TODO a string
+            dni_aria = solo_numeros(cliente.get('cliente_dnicuit',''))
+            apellido_aria = cliente.get('cliente_apellido', '')
+            nombre_aria = cliente.get('cliente_nombre', '')
+            nombre_completo_aria = f"{nombre_aria} {apellido_aria}"
             
-            # Comparación Nuclear
-            if dni_tn_numeros and dni_aria_numeros and (dni_tn_numeros in dni_aria_numeros or dni_aria_numeros in dni_tn_numeros):
+            # Match Flexible
+            if dni_tn_limpio in dni_aria or dni_aria in dni_tn_limpio:
                  return cliente, f"✅ ID {posible_id} confirmado por DNI/CUIT", debug_log
             elif hay_coincidencia_palabras(nombre_completo_aria, nombre_tn_limpio):
                  return cliente, f"✅ ID {posible_id} confirmado por Nombre", debug_log
             else:
-                 return cliente, f"⚠️ ID {posible_id} hallado, pero datos dudosos.", debug_log
+                 return cliente, f"⚠️ ID {posible_id} hallado, pero datos no cuadran.", debug_log
 
     # =========================================================================
-    # B. BÚSQUEDA MASIVA (La Red de Arrastre)
+    # 2. BÚSQUEDA DIRECTA DE DNI (CONFIANZA EN API)
     # =========================================================================
-    candidatos = []
-    
-    # B1. Buscar por DNI (Limpio)
-    if len(dni_tn_numeros) > 5:
-        # Probamos buscar el DNI limpio
-        res_dni = consultar_api_aria(f"clientes?q={dni_tn_numeros}")
-        candidatos.extend(res_dni)
-        debug_log.append(f"Resultados API x DNI '{dni_tn_numeros}': {len(res_dni)}")
+    if len(dni_tn_limpio) > 5:
+        # Buscamos en la API
+        res_dni = consultar_api_aria(f"clientes?q={dni_tn_limpio}")
         
-    # B2. Buscar por Apellido
+        debug_log.append(f"📡 API Query DNI ({dni_tn_limpio}): {len(res_dni)} resultados")
+        
+        if res_dni and len(res_dni) > 0:
+            # SI LA API LO ENCUENTRA, LE CREEMOS AL PRIMERO.
+            candidato = res_dni[0]
+            
+            # Validación visual (Solo para colorear el mensaje, NO para descartar)
+            dni_aria = solo_numeros(candidato.get('cliente_dnicuit',''))
+            
+            # Lógica de CUIT: ¿El DNI buscado está dentro del CUIT de Aria?
+            match_exacto = (dni_tn_limpio in dni_aria) or (dni_aria in dni_tn_limpio)
+            
+            if match_exacto:
+                return candidato, "✅ Encontrado por DNI (API Confirmed)", debug_log
+            else:
+                # Si la API lo trajo pero los números no se parecen, lo mostramos con alerta
+                # NO LO DESCARTAMOS. Mostramos al usuario.
+                return candidato, "⚠️ Encontrado por API (DNI difiere visualmente)", debug_log
+
+    # =========================================================================
+    # 3. BÚSQUEDA POR APELLIDO (Plan C - Arrastre)
+    # =========================================================================
     partes_nombre = nombre_tn.split()
     if len(partes_nombre) >= 1:
         apellido_tn = partes_nombre[-1].lower() 
         if len(apellido_tn) > 2:
             res_ape = consultar_api_aria(f"clientes?q={apellido_tn}")
-            candidatos.extend(res_ape)
-            debug_log.append(f"Resultados API x Apellido '{apellido_tn}': {len(res_ape)}")
-
-    # ---------------------------------------------------------
-    # C. COMPARACIÓN NUCLEAR (Uno por Uno)
-    # ---------------------------------------------------------
-    candidatos_unicos = {v['cliente_id']: v for v in candidatos if v.get('cliente_id')}.values()
-    
-    for c in candidatos_unicos:
-        # DATOS ARIA LIMPIOS
-        raw_dni_aria = c.get('cliente_dnicuit','')
-        dni_aria_numeros = solo_numeros(raw_dni_aria)
-        nombre_aria_full = f"{c.get('cliente_nombre','')} {c.get('cliente_apellido','')}"
-        
-        id_c = c.get('cliente_id')
-        
-        # LOG DETALLADO DE CADA CANDIDATO (Para que veas qué pasa)
-        log_match = f"❌ ID {id_c}: Aria('{dni_aria_numeros}') vs TN('{dni_tn_numeros}')"
-        
-        match_encontrado = False
-
-        # C1. Match de DNI/CUIT Nuclear
-        # Verificamos si uno está contenido en el otro (para cubrir CUITs)
-        if dni_tn_numeros and dni_aria_numeros:
-            if dni_tn_numeros == dni_aria_numeros:
-                match_encontrado = True
-                log_match = f"✅ MATCH EXACTO ID {id_c}"
-            elif len(dni_tn_numeros) > 5 and (dni_tn_numeros in dni_aria_numeros):
-                match_encontrado = True
-                log_match = f"✅ MATCH CUIT ID {id_c}"
-        
-        if match_encontrado:
-            debug_log.append(log_match)
-            return c, "✅ Encontrado por DNI/CUIT", debug_log
-        
-        debug_log.append(log_match)
-
-    # C2. Intento secundario: Nombre (Solo si no hubo match de DNI)
-    for c in candidatos_unicos:
-        nombre_aria_full = f"{c.get('cliente_nombre','')} {c.get('cliente_apellido','')}"
-        if hay_coincidencia_palabras(nombre_aria_full, nombre_tn_limpio):
-            return c, "⚠️ Coincidencia por Nombre (DNI no coincide, revisar)", debug_log
+            debug_log.append(f"📡 API Query Apellido ({apellido_tn}): {len(res_ape)} resultados")
+            
+            # Aquí sí filtramos porque el apellido trae mucha gente que no es
+            for c in res_ape:
+                dni_aria = solo_numeros(c.get('cliente_dnicuit',''))
+                
+                # Match cruzado: Si el DNI de TN aparece en este candidato traído por apellido
+                if dni_tn_limpio and dni_aria and (dni_tn_limpio in dni_aria):
+                    return c, "✅ Encontrado por Apellido > Match DNI", debug_log
 
     return None, None, debug_log
 
@@ -275,21 +261,14 @@ else:
                     if not cliente_aria:
                         st.error("❌ Cliente no encontrado automáticamente.")
                         
-                        # DEBUGGER VISUAL DETALLADO
-                        with st.expander("🐞 DIAGNÓSTICO TÉCNICO (¿Qué ve el robot?)"):
+                        # DEBUGGER VISUAL
+                        with st.expander("🐞 Ver Datos Técnicos (Caja Negra)"):
                             st.write(f"**Cliente TN:** {nombre}")
                             st.write(f"**DNI TN:** {p['customer'].get('identification')}")
                             st.write("---")
-                            st.write("**Análisis de Candidatos:**")
                             for log in debug_data:
-                                # Coloreamos si hubo match o fallo
-                                if "✅" in log:
-                                    st.success(log)
-                                elif "❌" in log:
-                                    st.error(log)
-                                else:
-                                    st.text(log)
-                            st.info("Nota: El robot compara 'solo números'. Si Aria tiene el campo DNI vacío, fallará aquí.")
+                                st.code(log)
+                            st.info("Si 'Resultados API' es > 0, deberíamos estar viendo el cliente. Si es 0, Aria no lo encuentra por ese dato.")
 
                         st.markdown("---")
                         st.write("🕵️ **Opción Manual:**")
