@@ -107,7 +107,7 @@ def hay_coincidencia_palabras(texto_aria, texto_tn):
     return len(palabras_aria.intersection(palabras_tn)) > 0
 
 # ==========================================
-# 🕵️ LÓGICA DE BÚSQUEDA (MEJORADA)
+# 🕵️ LÓGICA DE BÚSQUEDA (MEJORADA Y ROBUSTA)
 # ==========================================
 def buscar_cliente(nombre_tn, dni_tn, nota_tn):
     debug_log = []
@@ -117,13 +117,26 @@ def buscar_cliente(nombre_tn, dni_tn, nota_tn):
     
     debug_log.append(f"🔎 INPUT: TN_DNI='{dni_tn_numeros}' | TN_NOMBRE='{nombre_tn_limpio}'")
 
+    # --- FUNCIÓN AUXILIAR: RE-HIDRATACIÓN ---
+    # Busca la ficha completa si la búsqueda rápida devolvió datos incompletos
+    def obtener_ficha_completa(candidato_parcial):
+        # Intentamos obtener el ID con diferentes variantes de clave
+        posible_id = candidato_parcial.get('cliente_id') or candidato_parcial.get('id') or candidato_parcial.get('Id')
+        
+        if posible_id:
+            # Consultamos el endpoint de detalle para obtener saldo y cupo real
+            res_full = consultar_api_aria(f"cliente/{posible_id}")
+            if res_full and isinstance(res_full, list) and len(res_full) > 0:
+                return res_full[0] # Retorna ficha completa
+        
+        return candidato_parcial # Si falla, retorna lo que tiene
+
     # 1. ID EN NOTA (Prioridad Máxima)
     match = re.search(r'\b\d{3,6}\b', str(nota_tn))
     if match:
         posible_id = match.group()
         res = consultar_api_aria(f"cliente/{posible_id}")
         if res and isinstance(res, list) and len(res) > 0:
-            # Si está el ID en la nota, confiamos ciegamente
             return res[0], f"✅ ID {posible_id} forzado desde Nota", debug_log
 
     # 2. BÚSQUEDA DIRECTA DNI (Flexible)
@@ -132,19 +145,21 @@ def buscar_cliente(nombre_tn, dni_tn, nota_tn):
         debug_log.append(f"📡 API Query DNI: {len(res_dni)} resultados")
         
         if res_dni and len(res_dni) > 0:
-            candidato = res_dni[0]
+            candidato_raw = res_dni[0]
             
-            dni_aria = solo_numeros(candidato.get('cliente_dnicuit',''))
+            # RE-HIDRATAMOS: Convertimos resultado de búsqueda en ficha completa
+            candidato_full = obtener_ficha_completa(candidato_raw)
+            
+            dni_aria = solo_numeros(candidato_full.get('cliente_dnicuit',''))
             
             match_dni = (dni_tn_numeros in dni_aria) or (dni_aria in dni_tn_numeros)
             
             if match_dni:
-                return candidato, "✅ Encontrado por DNI (Match Exacto)", debug_log
+                return candidato_full, "✅ Encontrado por DNI (Match Exacto)", debug_log
             else:
-                # Si la API lo trajo pero los datos no coinciden visualmente (ej. campo vacío en Aria)
-                # Lo devolvemos igual con advertencia.
-                msj = f"⚠️ Encontrado por API (DNI no coincide visualmente)"
-                return candidato, msj, debug_log
+                # Si la API lo trajo pero no coincide visualmente, retornamos con alerta
+                msj = f"⚠️ Encontrado por API (DNI Aria: {dni_aria})"
+                return candidato_full, msj, debug_log
 
     # 3. BÚSQUEDA POR APELLIDO (Plan Respaldo)
     partes_nombre = nombre_tn.split()
@@ -155,9 +170,12 @@ def buscar_cliente(nombre_tn, dni_tn, nota_tn):
             debug_log.append(f"📡 API Query Apellido '{apellido_tn}': {len(res_ape)} resultados")
             
             for c in res_ape:
-                dni_aria = solo_numeros(c.get('cliente_dnicuit',''))
+                # RE-HIDRATAMOS cada candidato para verificar bien
+                c_full = obtener_ficha_completa(c)
+                dni_aria = solo_numeros(c_full.get('cliente_dnicuit',''))
+                
                 if dni_tn_numeros and dni_aria and (dni_tn_numeros in dni_aria):
-                    return c, "✅ Encontrado por Apellido > Match DNI", debug_log
+                    return c_full, "✅ Encontrado por Apellido > Match DNI", debug_log
 
     return None, None, debug_log
 
@@ -278,7 +296,8 @@ else:
                                     st.error("❌ Ese ID no existe en Aria.")
 
                     if cliente_aria:
-                        id_aria = cliente_aria.get('cliente_id')
+                        # Asegurar que cliente_id existe, sino usar un string vacío para que no rompa
+                        id_aria = cliente_aria.get('cliente_id', 'Desconocido')
                         cupo = float(cliente_aria.get('clienteScoringFinanciable', 0))
                         saldo = float(cliente_aria.get('cliente_saldo', 0))
                         
@@ -322,3 +341,4 @@ else:
                     if st.button("Cerrar Panel", key=f"close_{id_p}"):
                         del st.session_state['analisis_activo'][id_p]
                         st.rerun()
+
