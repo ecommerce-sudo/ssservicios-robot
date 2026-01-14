@@ -6,32 +6,27 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
 # ==========================================
-# ⚙️ 1. CONFIGURACIÓN Y SEGURIDAD
+# ⚙️ 1. CONFIGURACIÓN Y SECRETOS
 # ==========================================
+# Intentamos cargar los secrets. Si faltan, avisamos pero no rompemos la app hasta que se necesiten.
 try:
     TN_TOKEN = st.secrets["TN_TOKEN"]
     TN_ID = st.secrets["TN_ID"]
     ARIA_KEY = st.secrets["ARIA_KEY"]
-    EMAIL_USER = st.secrets.get("EMAIL_USER", "")
-    EMAIL_PASS = st.secrets.get("EMAIL_PASS", "")
-except FileNotFoundError:
-    st.error("⚠️ ERROR CRÍTICO: No se encontraron los Secrets (.streamlit/secrets.toml).")
-    st.stop()
-except KeyError as e:
-    st.error(f"⚠️ FALTA CLAVE EN SECRETS: {e}")
+except Exception as e:
+    st.error(f"⚠️ Error de Configuración: Faltan claves en Secrets ({e})")
     st.stop()
 
-# Constantes del Negocio
+# Configuración fija
 TN_USER_AGENT = "RobotWeb (24705)"
 ARIA_URL_BASE = "https://api.anatod.ar/api"
 TAG_ESPERA = "#ESPERANDO_DIFERENCIA"
 
-# Inicialización de Estado de Sesión
 if 'analisis_activo' not in st.session_state:
     st.session_state['analisis_activo'] = {}
 
 # ==========================================
-# 🔌 2. FUNCIONES DE CONEXIÓN (API)
+# 🔌 2. FUNCIONES DE CONEXIÓN
 # ==========================================
 def solo_numeros(texto):
     """Limpia strings dejando solo dígitos 0-9."""
@@ -88,39 +83,61 @@ def eliminar_etiqueta(id_pedido, nota_actual):
     requests.put(url, headers=headers, json={"owner_note": nota_limpia})
 
 # ==========================================
-# 📧 3. GESTOR DE CORREOS
+# 📧 3. GESTOR DE CORREOS (UNIVERSAL)
 # ==========================================
 def enviar_notificacion(email_cliente, nombre_cliente, escenario, datos_extra={}):
+    # Leemos la configuración de correo desde Secrets
     try:
         SMTP_SERVER = st.secrets["email"]["smtp_server"]
         SMTP_PORT = st.secrets["email"]["smtp_port"]
         SMTP_USER = st.secrets["email"]["smtp_user"]
         SMTP_PASS = st.secrets["email"]["smtp_password"]
     except:
-        st.warning("⚠️ Faltan datos de email en secrets.toml")
+        st.warning("⚠️ No se pudo enviar el correo: Faltan configurar los datos [email] en Secrets.")
         return False
 
     msg = MIMEMultipart()
     msg['From'] = SMTP_USER
     msg['To'] = email_cliente
     
-    # Textos de correos (Mismos que antes)
+    # Textos de correos
     if escenario == 1: # RECHAZADO
         msg['Subject'] = "Información importante sobre tu pedido en SSServicios"
-        cuerpo = f"Hola {nombre_cliente},<br><br>Te informamos que por el momento no es posible procesar la financiación...<br><br>Saludos,<br>SSServicios"
+        cuerpo = f"""
+        Hola {nombre_cliente},<br><br>
+        Muchas gracias por tu compra en nuestra tienda online.<br><br>
+        <b>Te informamos que hemos realizado el análisis crediticio correspondiente y, por el momento, no es posible procesar la financiación de este pedido a través de tu factura de servicios; podés probar nuevamente en unos meses.</b><br><br>
+        ¡No te preocupes! Si deseas continuar con la compra, puedes hacerlo abonando con <b>tarjeta de crédito, débito o transferencia bancaria</b>. Por favor, avísanos respondiendo a este correo si prefieres cambiar el medio de pago.<br><br>
+        Saludos cordiales,<br>El equipo de SSServicios
+        """
     elif escenario == 2: # DIFERENCIA
         cupo = datos_extra.get('cupo', 0)
         dif = datos_extra.get('diferencia', 0)
         alias = "TU.ALIAS.AQUI" 
         cbu = "0000000000000000000000" 
         msg['Subject'] = "Acción requerida: Tu pedido en SSServicios (Cupo Disponible)"
-        cuerpo = f"Hola {nombre_cliente},<br><br>Tienes un cupo de ${cupo:,.0f}. Debes abonar la diferencia de ${dif:,.0f}.<br>Alias: {alias}<br>CBU: {cbu}<br><br>Saludos,<br>SSServicios"
+        cuerpo = f"""
+        Hola {nombre_cliente},<br><br>
+        ¡Tenemos buenas noticias! Hemos verificado tu cuenta y tienes un cupo disponible de <b>${cupo:,.0f}</b> para financiar tu compra en cuotas sin interés.<br><br>
+        Como el total de tu pedido supera ese monto, para aprobar el envío necesitamos que abones la diferencia de <b>${dif:,.0f}</b> mediante transferencia bancaria.<br><br>
+        <b>Datos para la transferencia:</b><br><ul><li>Alias: {alias}</li><li>CBU: {cbu}</li></ul>
+        Por favor, <b>responde a este correo adjuntando el comprobante de pago</b>.<br><br>
+        Saludos,<br>El equipo de SSServicios
+        """
     elif escenario == 3: # APROBADO
         msg['Subject'] = "¡Felicitaciones! Tu compra fue aprobada ✅"
-        cuerpo = f"Hola {nombre_cliente},<br><br>Tu solicitud fue aprobada exitosamente en 3 cuotas sin interés.<br><br>Saludos,<br>SSServicios"
+        cuerpo = f"""
+        Hola {nombre_cliente},<br><br>
+        Te confirmamos que tu solicitud de financiación ha sido <b>aprobada exitosamente</b>.<br><br>
+        El importe de tu compra se verá reflejado en tu próxima factura de SSServicios en <b>3 cuotas sin interés</b>.<br><br>
+        Ya estamos preparando tu pedido.<br><br>
+        Saludos,<br>El equipo de SSServicios
+        """
     else: return False
 
     msg.attach(MIMEText(cuerpo, 'html'))
+    
+    # Envío Universal (Detecta SSL o TLS según puerto)
     try:
         if SMTP_PORT == 465:
             server = smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT)
@@ -133,7 +150,7 @@ def enviar_notificacion(email_cliente, nombre_cliente, escenario, datos_extra={}
         server.quit()
         return True
     except Exception as e:
-        st.error(f"Error envío: {e}")
+        st.error(f"❌ Error técnico enviando correo: {e}")
         return False
 
 # ==========================================
@@ -197,7 +214,7 @@ st.markdown("**Bandeja Unificada:** Gestión de financiación y transferencias."
 # --- SIDEBAR (BARRA LATERAL) ---
 st.sidebar.header("Panel de Control")
 
-# === 🕵️ CONSULTA MANUAL DE CUPO (NUEVO) ===
+# === 🕵️ CONSULTA MANUAL DE CUPO (Sidebar) ===
 st.sidebar.markdown("---")
 st.sidebar.subheader("🔎 Consulta Rápida")
 id_manual = st.sidebar.text_input("Ingresa ID Cliente:", placeholder="Ej: 7113")
@@ -207,7 +224,6 @@ if st.sidebar.button("Consultar Cupo"):
         st.sidebar.warning("Ingresa un número.")
     else:
         with st.spinner("Buscando..."):
-            # Usamos la funcion que busca directo por ID
             res_manual = consultar_api_aria_id(id_manual)
             
             if res_manual and res_manual[0].get('cliente_id'):
@@ -245,7 +261,7 @@ pedidos_visibles = []
 # --- FILTROS Y PROCESAMIENTO ---
 if pedidos_raw:
     for p in pedidos_raw:
-        # Filtros de limpieza
+        # Filtros de limpieza (Lo que NO queremos ver)
         if p.get('payment_status') == 'paid': continue 
         if p.get('shipping_status') in ['shipped', 'picked_up']: continue
         if p.get('status') == 'cancelled' or p.get('payment_status') == 'voided': continue
@@ -272,6 +288,7 @@ else:
         gateway = p.get('payment_details', {}).get('method', 'unknown').lower()
         prods = extraer_productos(p)
 
+        # Distinción Visual
         es_transferencia = 'transfer' in gateway or 'wire' in gateway
         icono_pago = "🏦" if es_transferencia else "🤝"
         lbl_pago = "Transferencia" if es_transferencia else "A Convenir"
@@ -288,6 +305,7 @@ else:
                 if st.button(f"🔍 Analizar Cliente", key=f"btn_{id_p}"):
                     st.session_state['analisis_activo'][id_p] = True
                 
+                # --- LÓGICA ANÁLISIS ---
                 if st.session_state['analisis_activo'].get(id_p):
                     st.markdown("---")
                     with st.spinner("Buscando..."):
