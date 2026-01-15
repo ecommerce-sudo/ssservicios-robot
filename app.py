@@ -165,7 +165,7 @@ def enviar_notificacion(email_cliente, nombre_cliente, escenario, datos_extra={}
         return False
     
     # DATOS DE CONTACTO
-    NUMERO_WHATSAPP = "5491153748291" 
+    NUMERO_WHATSAPP = "5492966840059" 
     
     # Recuperamos datos clave
     id_visual = datos_extra.get('id_visual', 'S/N') # Número corto (#385)
