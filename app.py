@@ -463,10 +463,15 @@ with tab_aprobados:
     p_ok = []
     for p in pedidos_todos:
         pay_status = p.get('payment_status')
+        status_general = p.get('status') # <--- Obtenemos el estado general
         nota = p.get('owner_note') or ""
-        if pay_status == 'paid' or TAG_APROBADO in nota:
+        
+        # CONDICIÓN MEJORADA:
+        # Es aprobado SI (está pagado O tiene etiqueta) Y ADEMÁS (NO está cancelado)
+        if (pay_status == 'paid' or TAG_APROBADO in nota) and status_general != 'cancelled':
             p_ok.append(p)
-    st.write(f"**{len(p_ok)}** aprobados recientes.")
+
+    st.write(f"**{len(p_ok)}** aprobados activos.")
     for p in p_ok[:15]: 
         id_vis = p.get('number', p['id'])
         st.caption(f"✅ #{id_vis} - {p['customer']['name']} - ${float(p['total']):,.0f}")
