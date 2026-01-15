@@ -59,7 +59,6 @@ def consultar_api_aria(params):
     except: return []
 
 def obtener_pedidos(estado="open"):
-    # Traemos más pedidos para asegurar
     url = f"https://api.tiendanube.com/v1/{TN_ID}/orders?status={estado}&per_page=100"
     headers = {'Authentication': f'bearer {TN_TOKEN}', 'User-Agent': TN_USER_AGENT}
     try:
@@ -69,9 +68,49 @@ def obtener_pedidos(estado="open"):
         st.error(f"Error al traer pedidos: {e}")
         return []
 
-# --- FUNCIONES DE ACCIÓN CON REPORTE DE ERRORES ---
+# --- FUNCIONES DE ACCIÓN ---
+
+def aprobar_orden_completa(id_pedido, nota_actual, etiqueta_poner, etiqueta_sacar=None):
+    """
+    SUPER FUNCIÓN: Marca como PAGADO y actualiza la NOTA al mismo tiempo.
+    Evita que Tiendanube acepte una cosa y rechace la otra.
+    """
+    url = f"https://api.tiendanube.com/v1/{TN_ID}/orders/{id_pedido}"
+    headers = {
+        'Authentication': f'bearer {TN_TOKEN}', 
+        'User-Agent': TN_USER_AGENT,
+        'Content-Type': 'application/json'
+    }
+    
+    # 1. Preparamos el texto de la nota
+    nota_str = str(nota_actual) if nota_actual is not None else ""
+    if etiqueta_sacar:
+        nota_str = nota_str.replace(etiqueta_sacar, "")
+    if etiqueta_poner and etiqueta_poner not in nota_str:
+        nota_str = f"{nota_str} {etiqueta_poner}"
+    nota_final = nota_str.strip()
+    
+    # 2. Preparamos el paquete completo (Pago + Nota)
+    payload = {
+        "payment_status": "paid",
+        "owner_note": nota_final
+    }
+    
+    # 3. Enviamos UN solo disparo
+    try:
+        res = requests.put(url, headers=headers, json=payload)
+        if res.status_code == 200:
+            return True
+        else:
+            st.error(f"❌ Error Tiendanube: {res.status_code} - {res.text}")
+            return False
+    except Exception as e:
+        st.error(f"❌ Error de conexión: {e}")
+        return False
 
 def actualizar_etiqueta(id_pedido, nota_actual, etiqueta_poner, etiqueta_sacar=None):
+    # Esta función se mantiene para cuando SOLO queremos mover etiquetas (Rechazos, Pendientes)
+    # SIN tocar el estado del pago.
     url = f"https://api.tiendanube.com/v1/{TN_ID}/orders/{id_pedido}"
     headers = {
         'Authentication': f'bearer {TN_TOKEN}', 
@@ -87,24 +126,9 @@ def actualizar_etiqueta(id_pedido, nota_actual, etiqueta_poner, etiqueta_sacar=N
     
     nota_final = nota_str.strip()
     
-    # EJECUCIÓN CON DEBUG
     res = requests.put(url, headers=headers, json={"owner_note": nota_final})
     if res.status_code != 200:
         st.error(f"❌ Error al etiquetar: {res.status_code} - {res.text}")
-        return False
-    return True
-
-def marcar_pagado_tn(id_pedido):
-    url = f"https://api.tiendanube.com/v1/{TN_ID}/orders/{id_pedido}"
-    headers = {
-        'Authentication': f'bearer {TN_TOKEN}', 
-        'User-Agent': TN_USER_AGENT,
-        'Content-Type': 'application/json'
-    }
-    # EJECUCIÓN CON DEBUG
-    res = requests.put(url, headers=headers, json={"payment_status": "paid"})
-    if res.status_code != 200:
-        st.error(f"❌ Error al marcar pagado: {res.status_code} - {res.text}")
         return False
     return True
 
@@ -151,9 +175,9 @@ def enviar_notificacion(email_cliente, nombre_cliente, escenario, datos_extra={}
         cupo = datos_extra.get('cupo', 0)
         dif = datos_extra.get('diferencia', 0)
         
-        # ⚠️⚠️⚠️ ¡EDITA TUS DATOS AQUÍ! ⚠️⚠️⚠️
-        alias = "TU.ALIAS.AQUI" 
-        cbu = "0000000000000000000000" 
+        # ⚠️ REVISA TUS DATOS DE CBU AQUI ABAJO
+        alias = "SSSERVICIOS.MP" 
+        cbu = "0000003100083049364969" 
         
         msg['Subject'] = "Acción requerida: Tu pedido en SSServicios (Cupo Disponible)"
         cuerpo = f"""
@@ -353,22 +377,18 @@ with tab_nuevos:
                                 st.success("🚀 ALCANZA EL CUPO")
                                 ca1, ca2 = st.columns(2)
                                 if ca1.button("📧 APROBAR + Mail", key=f"ok_m_{id_real}"):
-                                    # Intentamos pagar y etiquetar. Si falla, vemos el error.
-                                    pago_ok = marcar_pagado_tn(id_real)
-                                    etiq_ok = actualizar_etiqueta(id_real, nota, TAG_APROBADO)
-                                    mail_ok = enviar_notificacion(mail, nom, 3)
-                                    
-                                    if pago_ok and etiq_ok:
-                                        st.toast("¡Éxito Total!")
-                                        time.sleep(3); st.rerun()
+                                    # USAMOS LA SUPER FUNCIÓN
+                                    exito = aprobar_orden_completa(id_real, nota, TAG_APROBADO)
+                                    if exito:
+                                        enviar_notificacion(mail, nom, 3)
+                                        st.toast("¡Aprobado y Pagado Exitosamente! 🚀")
+                                        time.sleep(2); st.rerun()
 
                                 if ca2.button("💾 Solo APROBAR", key=f"ok_s_{id_real}"):
-                                    pago_ok = marcar_pagado_tn(id_real)
-                                    etiq_ok = actualizar_etiqueta(id_real, nota, TAG_APROBADO)
-                                    
-                                    if pago_ok and etiq_ok:
-                                        st.toast("Aprobado.")
-                                        time.sleep(3); st.rerun()
+                                    exito = aprobar_orden_completa(id_real, nota, TAG_APROBADO)
+                                    if exito:
+                                        st.toast("Aprobado y Pagado.")
+                                        time.sleep(2); st.rerun()
 
                             # 3. CASO DIFERENCIA
                             else:
@@ -418,19 +438,18 @@ with tab_pendientes:
                 with c_ok:
                     st.success("✅ ¿Pagó?")
                     if st.button(f"📧 Confirmar + Mail", key=f"p_ok_m_{id_real}"):
-                        pago_ok = marcar_pagado_tn(id_real)
-                        etiq_ok = actualizar_etiqueta(id_real, nota, TAG_APROBADO, TAG_PENDIENTE)
-                        enviar_notificacion(mail, nom, 3)
-                        if pago_ok and etiq_ok:
-                            st.toast("Aprobado!")
-                            time.sleep(3); st.rerun()
+                        # USAMOS LA SUPER FUNCIÓN para borrar "PENDIENTE", poner "APROBADO" y marcar "PAID"
+                        exito = aprobar_orden_completa(id_real, nota, TAG_APROBADO, TAG_PENDIENTE)
+                        if exito:
+                            enviar_notificacion(mail, nom, 3)
+                            st.toast("Aprobado y Pagado.")
+                            time.sleep(2); st.rerun()
                     
                     if st.button(f"💾 Solo Confirmar", key=f"p_ok_s_{id_real}"):
-                        pago_ok = marcar_pagado_tn(id_real)
-                        etiq_ok = actualizar_etiqueta(id_real, nota, TAG_APROBADO, TAG_PENDIENTE)
-                        if pago_ok and etiq_ok:
-                            st.toast("Aprobado.")
-                            time.sleep(3); st.rerun()
+                        exito = aprobar_orden_completa(id_real, nota, TAG_APROBADO, TAG_PENDIENTE)
+                        if exito:
+                            st.toast("Aprobado y Pagado.")
+                            time.sleep(2); st.rerun()
 
                 with c_cancel:
                     st.error("🚫 ¿Cancelar?")
