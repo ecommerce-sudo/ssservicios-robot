@@ -32,37 +32,40 @@ if 'analisis_activo' not in st.session_state:
 # ==========================================
 # 🧠 CEREBRO DE CROSS-SELLING (TUS REGLAS)
 # ==========================================
+# ⚠️ IMPORTANTE: PARA QUE LAS FOTOS NO SE ROMPAN, AGREGA EL CAMPO "foto" CON EL LINK DE LA IMAGEN
+# Si no ponés foto, el robot intentará buscarla, pero puede fallar.
+
 PERFILES_INTERES = {
     "GAMING": {
         "keywords": ["gamer", "juego", "playstation", "ps4", "ps5", "joystick", "rtx", "teclado", "mecanico", "redragon", "pc", "mouse"],
-        "links": [
-            "https://ssstore.com.ar/productos/mouse-cerberus-redragon-m703/",
-            "https://ssstore.com.ar/productos/auricular-vincha-cronus-redragon-h211w-rgb/",
-            "https://ssstore.com.ar/productos/teclado-aditya-redragon-k513-rgb-sin-n/"
+        "items": [
+            {"link": "https://ssstore.com.ar/productos/mouse-cerberus-redragon-m703/", "foto": ""},
+            {"link": "https://ssstore.com.ar/productos/auricular-vincha-cronus-redragon-h211w-rgb/", "foto": ""},
+            {"link": "https://ssstore.com.ar/productos/teclado-aditya-redragon-k513-rgb-sin-n/", "foto": ""}
         ]
     },
     "CONECTIVIDAD": {
         "keywords": ["starlink", "router", "antena", "wifi", "ubiquiti", "internet", "mesh", "cable", "red"],
-        "links": [
-            "https://ssstore.com.ar/productos/router-wifi-huaweii-ax2s-ws700v2/",
-            "https://ssstore.com.ar/productos/cable-starlink-mini-usb-c-a-fuente-portatil-usa-tu-antena-con-power-bank-n9thq/",
-            "https://ssstore.com.ar/productos/router-mesh-tp-link-deco-xe75-wifi-6e-ax5400-blanco-negro-1u/"
+        "items": [
+            {"link": "https://ssstore.com.ar/productos/router-wifi-huaweii-ax2s-ws700v2/", "foto": ""},
+            {"link": "https://ssstore.com.ar/productos/cable-starlink-mini-usb-c-a-fuente-portatil-usa-tu-antena-con-power-bank-n9thq/", "foto": ""},
+            {"link": "https://ssstore.com.ar/productos/router-mesh-tp-link-deco-xe75-wifi-6e-ax5400-blanco-negro-1u/", "foto": ""}
         ]
     },
     "MOVILIDAD": {
         "keywords": ["samsung", "iphone", "motorola", "celular", "xiaomi", "smartphone", "apple", "android"],
-        "links": [
-            "https://ssstore.com.ar/productos/cable-foxbox-pixel-100w-con-display-lcd-usb-c-a-usb-c-egdem/",
-            "https://ssstore.com.ar/productos/cargador-de-auto-foxbox-way-qc-3-0-30w-carga-rapida-qualcomm-rfgoa/",
-            "https://ssstore.com.ar/productos/cargador-foxbox-mega-30w-gan-negro-para-iphone-cable-lightning-j8nie/"
+        "items": [
+            {"link": "https://ssstore.com.ar/productos/cable-foxbox-pixel-100w-con-display-lcd-usb-c-a-usb-c-egdem/", "foto": ""},
+            {"link": "https://ssstore.com.ar/productos/cargador-de-auto-foxbox-way-qc-3-0-30w-carga-rapida-qualcomm-rfgoa/", "foto": ""},
+            {"link": "https://ssstore.com.ar/productos/cargador-foxbox-mega-30w-gan-negro-para-iphone-cable-lightning-j8nie/", "foto": ""}
         ]
     },
     "HOGAR": {
         "keywords": ["tv", "smart", "televisor", "google", "android tv", "4k", "led", "ups", "casa"],
-        "links": [
-            "https://ssstore.com.ar/productos/auriculares-inalambricos-foxbox-clarity-negro-control-tactil-y-asistente-de-voz-qi0kh/",
-            "https://ssstore.com.ar/productos/ups-marsriva-kp2-ultra-16000mah-5v-12v-bivolt/",
-            "https://ssstore.com.ar/productos/freidora-de-aire-foxbox-aeris-6l-digital-1500w-sin-aceite-yufou/"
+        "items": [
+            {"link": "https://ssstore.com.ar/productos/auriculares-inalambricos-foxbox-clarity-negro-control-tactil-y-asistente-de-voz-qi0kh/", "foto": ""},
+            {"link": "https://ssstore.com.ar/productos/ups-marsriva-kp2-ultra-16000mah-5v-12v-bivolt/", "foto": ""},
+            {"link": "https://ssstore.com.ar/productos/freidora-de-aire-foxbox-aeris-6l-digital-1500w-sin-aceite-yufou/", "foto": ""}
         ]
     }
 }
@@ -110,16 +113,28 @@ def obtener_pedidos(estado="open"):
 # --- FUNCIONES INTELIGENTES PARA CROSS SELLING ---
 
 @st.cache_data(ttl=3600)
-def obtener_info_desde_link(link_producto):
+def obtener_info_desde_item(item_dict):
     """
-    Toma un link, extrae el nombre (slug) y busca en TN precio y foto.
+    Toma un diccionario {link, foto} y completa el precio y nombre desde TN.
+    Si tiene foto manual, usa esa. Si no, la busca.
     """
+    link_producto = item_dict.get('link', '#')
+    foto_manual = item_dict.get('foto', '')
+    
+    # Valores por defecto
+    resultado = {
+        'nombre': "Producto Recomendado",
+        'precio': 0,
+        'foto': foto_manual if foto_manual else "https://via.placeholder.com/150?text=Ver+Web", # Placeholder simple
+        'url': link_producto
+    }
+
     try:
-        # Extraer el 'handle' del link (lo ultimo despues de la barra)
+        # Extraer el 'handle' del link
         slug = link_producto.strip("/").split("/")[-1]
-        nombre_busqueda = slug.replace("-", " ") # "mouse-gamer" -> "mouse gamer"
+        nombre_busqueda = slug.replace("-", " ") 
         
-        # Buscar en API TN
+        # Buscar en API TN para sacar precio y nombre real
         url = f"https://api.tiendanube.com/v1/{TN_ID}/products"
         params = {'q': nombre_busqueda, 'per_page': 1}
         headers = {'Authentication': f'bearer {TN_TOKEN}', 'User-Agent': TN_USER_AGENT}
@@ -127,33 +142,24 @@ def obtener_info_desde_link(link_producto):
         res = requests.get(url, headers=headers, params=params)
         if res.status_code == 200 and len(res.json()) > 0:
             p = res.json()[0]
-            # Validar que sea parecido (opcional)
-            img = "https://via.placeholder.com/150"
-            if p.get('images'): img = p['images'][0]['src']
             
-            return {
-                'nombre': p['name']['es'],
-                'precio': float(p.get('price', 0)) if p.get('price') else 0,
-                'foto': img,
-                'url': link_producto # Usamos el link original que es seguro
-            }
-    except:
-        pass
+            # Usamos foto de la API solo si no hay foto manual
+            img_api = ""
+            if p.get('images'): img_api = p['images'][0]['src']
+            
+            resultado['nombre'] = p['name']['es']
+            resultado['precio'] = float(p.get('price', 0)) if p.get('price') else 0
+            if not foto_manual:
+                resultado['foto'] = img_api
+
+    except Exception as e:
+        print(f"Error buscando producto: {e}")
     
-    # Fallback si falla la busqueda (para que no salga roto)
-    return {
-        'nombre': "Producto Recomendado",
-        'precio': 0,
-        'foto': "https://via.placeholder.com/150?text=Oferta",
-        'url': link_producto
-    }
+    return resultado
 
 def generar_recomendaciones(nombre_producto_comprado):
-    """
-    Analiza el titulo comprado y devuelve 3 diccionarios de productos.
-    """
     nombre_lower = str(nombre_producto_comprado).lower()
-    perfil_detectado = "HOGAR" # Default (General)
+    perfil_detectado = "HOGAR" # Default
     
     # 1. Detección de Perfil
     for perfil, datos in PERFILES_INTERES.items():
@@ -163,13 +169,13 @@ def generar_recomendaciones(nombre_producto_comprado):
                 break
         if perfil_detectado != "HOGAR": break
     
-    # 2. Obtener Links del perfil
-    links_objetivo = PERFILES_INTERES[perfil_detectado]['links']
+    # 2. Obtener Items del perfil
+    items_objetivo = PERFILES_INTERES[perfil_detectado]['items']
     
-    # 3. Enriquecer info (buscar precio/foto)
+    # 3. Enriquecer info
     productos_finales = []
-    for link in links_objetivo:
-        info = obtener_info_desde_link(link)
+    for item in items_objetivo:
+        info = obtener_info_desde_item(item)
         if info: productos_finales.append(info)
         
     return productos_finales, perfil_detectado
@@ -178,17 +184,11 @@ def generar_recomendaciones(nombre_producto_comprado):
 
 def aprobar_orden_completa(id_pedido, nota_actual, etiqueta_poner, etiqueta_sacar=None):
     url = f"https://api.tiendanube.com/v1/{TN_ID}/orders/{id_pedido}"
-    headers = {
-        'Authentication': f'bearer {TN_TOKEN}', 
-        'User-Agent': TN_USER_AGENT,
-        'Content-Type': 'application/json'
-    }
+    headers = {'Authentication': f'bearer {TN_TOKEN}', 'User-Agent': TN_USER_AGENT, 'Content-Type': 'application/json'}
     
     nota_str = str(nota_actual) if nota_actual is not None else ""
-    if etiqueta_sacar:
-        nota_str = nota_str.replace(etiqueta_sacar, "")
-    if etiqueta_poner and etiqueta_poner not in nota_str:
-        nota_str = f"{nota_str} {etiqueta_poner}"
+    if etiqueta_sacar: nota_str = nota_str.replace(etiqueta_sacar, "")
+    if etiqueta_poner and etiqueta_poner not in nota_str: nota_str = f"{nota_str} {etiqueta_poner}"
     nota_final = nota_str.strip()
     
     payload = {"payment_status": "paid", "owner_note": nota_final}
@@ -197,7 +197,7 @@ def aprobar_orden_completa(id_pedido, nota_actual, etiqueta_poner, etiqueta_saca
         res = requests.put(url, headers=headers, json=payload)
         if res.status_code == 200: return True
         else:
-            if res.status_code == 422: # Bloqueo pasarela offline
+            if res.status_code == 422: 
                 requests.put(url, headers=headers, json={"owner_note": nota_final})
                 return True 
             st.error(f"❌ Error Tiendanube: {res.status_code} - {res.text}")
@@ -223,7 +223,7 @@ def cancelar_orden_tn(id_pedido):
     return res.status_code == 200
 
 # ==========================================
-# 📧 3. GESTOR DE CORREOS (CON CROSS SELLING IA)
+# 📧 3. GESTOR DE CORREOS
 # ==========================================
 def enviar_notificacion(email_cliente, nombre_cliente, escenario, datos_extra={}):
     try:
@@ -248,6 +248,8 @@ def enviar_notificacion(email_cliente, nombre_cliente, escenario, datos_extra={}
             filas = ""
             for p in recomendados:
                 precio_fmt = f"${p['precio']:,.0f}" if p['precio'] > 0 else "Ver Precio"
+                
+                # Diseño de tarjeta de producto
                 filas += f"""
                 <td style="width: 33%; padding: 10px; text-align: center; border: 1px solid #f0f0f0; border-radius: 8px; background: #fff;">
                     <a href="{p['url']}" style="text-decoration: none; color: #333; display: block;">
@@ -273,8 +275,6 @@ def enviar_notificacion(email_cliente, nombre_cliente, escenario, datos_extra={}
     msg = MIMEMultipart()
     msg['From'] = f"SSServicios <{SMTP_USER}>"
     msg['To'] = email_cliente
-
-    # Plantillas HTML
     style_base = "font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; color: #333; line-height: 1.6; max-width: 600px; margin: auto;"
     
     if escenario == 1: # RECHAZADO
@@ -329,7 +329,7 @@ def enviar_notificacion(email_cliente, nombre_cliente, escenario, datos_extra={}
     except: return False
 
 # ==========================================
-# 🧠 4. LÓGICA DE BÚSQUEDA
+# 🧠 4. LÓGICA DE BÚSQUEDA Y FRONTEND
 # ==========================================
 def buscar_cliente_cascada(nombre_tn, dni_tn, nota_tn):
     nota_segura = str(nota_tn) if nota_tn is not None else ""
@@ -375,9 +375,7 @@ def buscar_cliente_cascada(nombre_tn, dni_tn, nota_tn):
 def extraer_productos(pedido):
     return ", ".join([f"{i.get('name')} ({i.get('quantity')})" for i in pedido.get('products', [])])
 
-# ==========================================
-# 🖥️ 5. INTERFAZ OPERATIVA
-# ==========================================
+# --- INTERFAZ ---
 st.set_page_config(page_title="Gestor SSServicios", page_icon="🤖", layout="wide")
 st.title("🤖 Gestor de Ventas Contrafactura")
 
@@ -424,8 +422,6 @@ with tab_nuevos:
             total = float(p['total'])
             nota = p.get('owner_note') or ""
             prods_txt = extraer_productos(p)
-            
-            # NOMBRE DEL PRIMER PRODUCTO PARA LA IA
             nombre_prod_principal = p['products'][0]['name'] if p['products'] else ""
 
             with st.expander(f"🆕 #{id_visual} | {nom} | ${total:,.0f}", expanded=True):
@@ -456,7 +452,7 @@ with tab_nuevos:
                                         st.toast("Rechazado enviado."); time.sleep(2); st.rerun()
                             elif total <= cupo:
                                 st.success("🚀 APROBABLE")
-                                if st.button("📧 APROBAR TOTAL", key=f"ok_{id_real}"):
+                                if st.button("📧 APROBAR + Mail", key=f"ok_{id_real}"):
                                     if aprobar_orden_completa(id_real, nota, TAG_APROBADO):
                                         enviar_notificacion(mail, nom, 3, {'id_visual': id_visual, 'nombre_producto_base': nombre_prod_principal})
                                         st.toast("¡Aprobado!"); time.sleep(2); st.rerun()
@@ -484,7 +480,7 @@ with tab_pendientes:
         
         with st.expander(f"⏳ #{id_visual} | {nom}", expanded=True):
             c_ok, c_kill = st.columns(2)
-            if c_ok.button("✅ Confirmar Pago", key=f"pok_{id_real}"):
+            if c_ok.button("✅ Confirmar + Mail", key=f"pok_{id_real}"):
                 if aprobar_orden_completa(id_real, p.get('owner_note'), TAG_APROBADO, TAG_PENDIENTE):
                     enviar_notificacion(p['customer'].get('email'), nom, 3, {'id_visual': id_visual, 'nombre_producto_base': nombre_prod_principal})
                     st.toast("Confirmado!"); time.sleep(2); st.rerun()
