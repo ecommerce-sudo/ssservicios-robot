@@ -463,18 +463,36 @@ with tab_aprobados:
     p_ok = []
     for p in pedidos_todos:
         pay_status = p.get('payment_status')
-        status_general = p.get('status') # <--- Obtenemos el estado general
+        status_gen = p.get('status')
         nota = p.get('owner_note') or ""
         
-        # CONDICIÓN MEJORADA:
-        # Es aprobado SI (está pagado O tiene etiqueta) Y ADEMÁS (NO está cancelado)
-        if (pay_status == 'paid' or TAG_APROBADO in nota) and status_general != 'cancelled':
+        # LÓGICA MAESTRA:
+        # Entra si: (Está pagado REAL) O (Tiene la etiqueta #APROBADO)
+        # Y ADEMÁS: No está cancelado.
+        if (pay_status == 'paid' or TAG_APROBADO in nota) and status_gen != 'cancelled':
             p_ok.append(p)
 
-    st.write(f"**{len(p_ok)}** aprobados activos.")
-    for p in p_ok[:15]: 
+    st.write(f"**{len(p_ok)}** aprobados (Pagados + Etiquetados).")
+    
+    for p in p_ok:
         id_vis = p.get('number', p['id'])
-        st.caption(f"✅ #{id_vis} - {p['customer']['name']} - ${float(p['total']):,.0f}")
+        nom = p['customer']['name']
+        total = float(p['total'])
+        pay_status = p.get('payment_status')
+        nota = p.get('owner_note') or ""
+        
+        # DIFERENCIACIÓN VISUAL
+        if pay_status == 'paid':
+            icono = "🟢" # Pagado real en TN
+            estado_txt = "PAGO CONFIRMADO"
+        else:
+            icono = "⚠️" # Aprobado por nosotros, pero pendiente en TN
+            estado_txt = "APROBADO (Offline)"
+            
+        with st.expander(f"{icono} #{id_vis} | {nom} | ${total:,.0f} | {estado_txt}"):
+            st.info(f"Nota: {nota}")
+            if pay_status != 'paid':
+                st.caption("💡 Este pedido figura 'Pendiente' en Tiendanube por ser Offline, pero ya tiene la etiqueta #APROBADO y el mail fue enviado.")
 
 # --- 4. PESTAÑA: CANCELADOS 🚫 ---
 with tab_cancelados:
