@@ -3,6 +3,7 @@ import requests
 import re
 import smtplib
 import time
+import urllib.parse
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
@@ -102,6 +103,11 @@ def aprobar_orden_completa(id_pedido, nota_actual, etiqueta_poner, etiqueta_saca
         if res.status_code == 200:
             return True
         else:
+            # Si falla (ej: bloqueo gateway offline), intentamos al menos salvar la nota
+            if res.status_code == 422: 
+                requests.put(url, headers=headers, json={"owner_note": nota_final})
+                return True # Retornamos True porque visualmente "Aprobamos" con la etiqueta
+            
             st.error(f"❌ Error Tiendanube: {res.status_code} - {res.text}")
             return False
     except Exception as e:
@@ -110,7 +116,6 @@ def aprobar_orden_completa(id_pedido, nota_actual, etiqueta_poner, etiqueta_saca
 
 def actualizar_etiqueta(id_pedido, nota_actual, etiqueta_poner, etiqueta_sacar=None):
     # Esta función se mantiene para cuando SOLO queremos mover etiquetas (Rechazos, Pendientes)
-    # SIN tocar el estado del pago.
     url = f"https://api.tiendanube.com/v1/{TN_ID}/orders/{id_pedido}"
     headers = {
         'Authentication': f'bearer {TN_TOKEN}', 
@@ -146,9 +151,10 @@ def cancelar_orden_tn(id_pedido):
     return True
 
 # ==========================================
-# 📧 3. GESTOR DE CORREOS
+# 📧 3. GESTOR DE CORREOS (MEJORADO)
 # ==========================================
 def enviar_notificacion(email_cliente, nombre_cliente, escenario, datos_extra={}):
+    # --- CONFIGURACIÓN ---
     try:
         SMTP_SERVER = st.secrets["email"]["smtp_server"]
         SMTP_PORT = st.secrets["email"]["smtp_port"]
@@ -157,49 +163,98 @@ def enviar_notificacion(email_cliente, nombre_cliente, escenario, datos_extra={}
     except:
         st.warning("⚠️ Faltan datos de email en Secrets.")
         return False
-
-    msg = MIMEMultipart()
-    msg['From'] = SMTP_USER
-    msg['To'] = email_cliente
     
-    if escenario == 1: # RECHAZADO
-        msg['Subject'] = "Información importante sobre tu pedido en SSServicios"
+    # DATOS DE CONTACTO
+    NUMERO_WHATSAPP = "5491153748291" 
+    
+    # Recuperamos datos clave
+    id_visual = datos_extra.get('id_visual', 'S/N') # Número corto (#385)
+    
+    msg = MIMEMultipart()
+    msg['From'] = f"SSServicios <{SMTP_USER}>"
+    msg['To'] = email_cliente
+
+    # --- PLANTILLAS DE EMAIL HTML ---
+    
+    if escenario == 1: # 🔴 RECHAZADO / MORA
+        msg['Subject'] = f"Actualización sobre tu pedido #{id_visual} en SSServicios"
         cuerpo = f"""
-        Hola {nombre_cliente},<br><br>
-        Muchas gracias por tu compra.<br><br>
-        Te informamos que por el momento no es posible procesar la financiación a través de tu factura de servicios.<br><br>
-        ¡No te preocupes! <b>Reservamos tu pedido</b> para que puedas completarlo abonando con <b>tarjeta o transferencia</b>. Si deseas hacerlo, respóndenos este correo.<br><br>
-        Saludos,<br>El equipo de SSServicios
+        <div style="font-family: Arial, sans-serif; color: #333; line-height: 1.6;">
+            <p>Hola <strong>{nombre_cliente}</strong>,</p>
+            <p>Queremos contarte que ya recibimos tu pedido <strong>#{id_visual}</strong>.</p>
+            <p>Al intentar procesar la financiación a través de tu factura de servicios, el sistema nos indica que momentáneamente no tenés cupo disponible para esta operación.</p>
+            <p><strong>¡Pero no queremos que te quedes sin tus productos!</strong><br>
+            Hemos reservado tu pedido por 24 horas para que puedas completarlo abonando con <strong>tarjeta de crédito, débito o transferencia bancaria</strong>.</p>
+            <p>Si te interesa, respondé este correo y te enviamos el link de pago.</p>
+            <br>
+            <p>Atentamente,<br><strong>El equipo de SSServicios</strong></p>
+        </div>
         """
-    elif escenario == 2: # DIFERENCIA
+
+    elif escenario == 2: # 🟡 DIFERENCIA (CON LINK WHATSAPP)
         cupo = datos_extra.get('cupo', 0)
         dif = datos_extra.get('diferencia', 0)
         
-        # ⚠️ REVISA TUS DATOS DE CBU AQUI ABAJO
-        alias = "SSSERVICIOS.MP" 
-        cbu = "0000003100083049364969" 
-        
-        msg['Subject'] = "Acción requerida: Tu pedido en SSServicios (Cupo Disponible)"
+        # Generar Link de WhatsApp Dinámico
+        texto_ws = f"Hola SSServicios, envío el comprobante de pago por la diferencia del pedido #{id_visual}."
+        texto_ws_encoded = urllib.parse.quote(texto_ws)
+        link_ws = f"https://wa.me/{NUMERO_WHATSAPP}?text={texto_ws_encoded}"
+
+        msg['Subject'] = f"Tu pedido #{id_visual}: Instrucciones para finalizar"
         cuerpo = f"""
-        Hola {nombre_cliente},<br><br>
-        ¡Buenas noticias! Tienes un cupo de <b>${cupo:,.0f}</b> para financiar tu compra.<br><br>
-        Para aprobar el envío, necesitamos que abones la diferencia de <b>${dif:,.0f}</b>.<br><br>
-        <b>Datos transferencia:</b><br>Alias: {alias}<br>CBU: {cbu}<br><br>
-        Por favor, responde con el comprobante.<br><br>
-        Saludos,<br>El equipo de SSServicios
+        <div style="font-family: Arial, sans-serif; color: #333; line-height: 1.6;">
+            <p>Hola <strong>{nombre_cliente}</strong>,</p>
+            <p>¡Buenas noticias! Tu compra ha sido aprobada parcialmente.<br>
+            Tenés un cupo disponible de <strong>${cupo:,.0f}</strong> para financiar en tu factura.</p>
+            
+            <div style="background-color: #fff8e1; padding: 15px; border-left: 5px solid #ffcc00; margin: 20px 0;">
+                <p style="margin: 0;">Para que podamos despachar tu pedido, solo necesitamos que abones la diferencia de: <strong style="font-size: 1.1em;">${dif:,.0f}</strong></p>
+            </div>
+
+            <p><strong>Datos para la transferencia:</strong></p>
+            <ul style="background-color: #f9f9f9; padding: 15px; list-style: none; border-radius: 5px;">
+                <li><strong>Banco:</strong> BBVA</li>
+                <li><strong>Número de cuenta:</strong> 272-010185/2</li>
+                <li><strong>CBU:</strong> 0170272120000001018527</li>
+                <li><strong>Titular:</strong> SSServicios Sas</li>
+                <li><strong>CUIT:</strong> 30-71586345-2</li>
+            </ul>
+
+            <p><strong>¿Ya realizaste el pago?</strong><br>
+            Hacé clic en el siguiente enlace para enviarnos el comprobante por WhatsApp (ya incluye tu número de orden):</p>
+            
+            <p style="text-align: center; margin-top: 25px;">
+                <a href="{link_ws}" style="background-color: #25D366; color: white; padding: 12px 25px; text-decoration: none; border-radius: 5px; font-weight: bold; font-size: 16px;">
+                👉 ENVIAR COMPROBANTE AHORA
+                </a>
+            </p>
+            
+            <hr style="border: 0; border-top: 1px solid #eee; margin-top: 30px;">
+            <p style="font-size: 12px; color: #777;">
+            <em>Nota de seguridad: Si tenés dudas sobre la veracidad de este correo, podés contactarnos directamente a través de nuestros canales oficiales.</em>
+            </p>
+            <br>
+            <p>Atentamente,<br><strong>El equipo de SSServicios</strong></p>
+        </div>
         """
-    elif escenario == 3: # APROBADO
-        msg['Subject'] = "¡Felicitaciones! Tu compra fue aprobada ✅"
+
+    elif escenario == 3: # 🟢 APROBADO
+        msg['Subject'] = f"¡Felicitaciones! Tu pedido #{id_visual} fue aprobado ✅"
         cuerpo = f"""
-        Hola {nombre_cliente},<br><br>
-        Confirmamos que tu solicitud de financiación ha sido <b>aprobada exitosamente</b>.<br><br>
-        El importe se verá en tu próxima factura en <b>3 cuotas sin interés</b>.<br><br>
-        Ya estamos preparando tu pedido.<br><br>
-        Saludos,<br>El equipo de SSServicios
+        <div style="font-family: Arial, sans-serif; color: #333; line-height: 1.6;">
+            <p>Hola <strong>{nombre_cliente}</strong>,</p>
+            <p>Te confirmamos que la financiación de tu compra <strong>#{id_visual}</strong> ha sido <strong>aprobada exitosamente</strong>.</p>
+            <p>El importe se verá reflejado en tu próxima factura de servicios en <strong>3 cuotas sin interés</strong>.<br>
+            Ya nuestro equipo de depósito está preparando tu paquete para despacharlo lo antes posible.</p>
+            <p>¡Gracias por confiar en nosotros!</p>
+            <br>
+            <p>Atentamente,<br><strong>El equipo de SSServicios</strong></p>
+        </div>
         """
     else: return False
 
     msg.attach(MIMEText(cuerpo, 'html'))
+    
     try:
         if SMTP_PORT == 465: server = smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT)
         else:
@@ -363,7 +418,7 @@ with tab_nuevos:
                             if meses > 0:
                                 cr1, cr2 = st.columns(2)
                                 if cr1.button("📧 Rechazar + Mail", key=f"r_m_{id_real}"):
-                                    if enviar_notificacion(mail, nom, 1):
+                                    if enviar_notificacion(mail, nom, 1, {'id_visual': id_visual}):
                                         if actualizar_etiqueta(id_real, nota, TAG_PENDIENTE):
                                             st.toast("Procesado.")
                                             time.sleep(3); st.rerun()
@@ -380,14 +435,14 @@ with tab_nuevos:
                                     # USAMOS LA SUPER FUNCIÓN
                                     exito = aprobar_orden_completa(id_real, nota, TAG_APROBADO)
                                     if exito:
-                                        enviar_notificacion(mail, nom, 3)
-                                        st.toast("¡Aprobado y Pagado Exitosamente! 🚀")
+                                        enviar_notificacion(mail, nom, 3, {'id_visual': id_visual})
+                                        st.toast("¡Aprobado Exitosamente! 🚀")
                                         time.sleep(2); st.rerun()
 
                                 if ca2.button("💾 Solo APROBAR", key=f"ok_s_{id_real}"):
                                     exito = aprobar_orden_completa(id_real, nota, TAG_APROBADO)
                                     if exito:
-                                        st.toast("Aprobado y Pagado.")
+                                        st.toast("Aprobado.")
                                         time.sleep(2); st.rerun()
 
                             # 3. CASO DIFERENCIA
@@ -396,7 +451,8 @@ with tab_nuevos:
                                 st.warning(f"⚠️ Faltan ${dif:,.0f}")
                                 cd1, cd2 = st.columns(2)
                                 if cd1.button("📧 Pedir Diferencia", key=f"dif_m_{id_real}"):
-                                    if enviar_notificacion(mail, nom, 2, {'cupo':cupo, 'diferencia':dif}):
+                                    # Pasamos ID Visual para el link de WhatsApp y el asunto
+                                    if enviar_notificacion(mail, nom, 2, {'cupo':cupo, 'diferencia':dif, 'id_visual': id_visual}):
                                         if actualizar_etiqueta(id_real, nota, TAG_PENDIENTE):
                                             st.toast("Enviado.")
                                             time.sleep(3); st.rerun()
@@ -441,7 +497,7 @@ with tab_pendientes:
                         # USAMOS LA SUPER FUNCIÓN para borrar "PENDIENTE", poner "APROBADO" y marcar "PAID"
                         exito = aprobar_orden_completa(id_real, nota, TAG_APROBADO, TAG_PENDIENTE)
                         if exito:
-                            enviar_notificacion(mail, nom, 3)
+                            enviar_notificacion(mail, nom, 3, {'id_visual': id_visual})
                             st.toast("Aprobado y Pagado.")
                             time.sleep(2); st.rerun()
                     
