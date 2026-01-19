@@ -32,9 +32,6 @@ if 'analisis_activo' not in st.session_state:
 # ==========================================
 # 🧠 CEREBRO DE CROSS-SELLING (TUS REGLAS)
 # ==========================================
-# ⚠️ IMPORTANTE: PARA QUE LAS FOTOS NO SE ROMPAN, AGREGA EL CAMPO "foto" CON EL LINK DE LA IMAGEN
-# Si no ponés foto, el robot intentará buscarla, pero puede fallar.
-
 PERFILES_INTERES = {
     "GAMING": {
         "keywords": ["gamer", "juego", "playstation", "ps4", "ps5", "joystick", "rtx", "teclado", "mecanico", "redragon", "pc", "mouse"],
@@ -73,6 +70,18 @@ PERFILES_INTERES = {
 # ==========================================
 # 🔌 2. FUNCIONES DE CONEXIÓN (API)
 # ==========================================
+
+# --- NUEVA FUNCIÓN DE SEGURIDAD (CORRECCIÓN) ---
+def safe_float(value):
+    """Convierte valores a float de forma segura, evitando errores con None."""
+    try:
+        if value is None or value == "":
+            return 0.0
+        return float(value)
+    except (ValueError, TypeError):
+        return 0.0
+# -----------------------------------------------
+
 def solo_numeros(texto):
     if texto is None: return ""
     return re.sub(r'\D', '', str(texto))
@@ -389,8 +398,9 @@ if st.sidebar.button("Consultar Cupo"):
             if res_manual and res_manual[0].get('cliente_id'):
                 cli_m = res_manual[0]
                 nom_m = f"{cli_m.get('cliente_nombre','')} {cli_m.get('cliente_apellido','')}"
-                try: cupo_m = float(cli_m.get('clienteScoringFinanciable', 0))
-                except: cupo_m = 0.0
+                # --- FIX APLICADO AQUÍ ---
+                cupo_m = safe_float(cli_m.get('clienteScoringFinanciable'))
+                # -------------------------
                 meses_m = int(cli_m.get('cliente_meses_atraso', 0) or 0)
                 st.sidebar.success(f"✅ **{nom_m}**")
                 st.sidebar.metric("Cupo Disponible", f"${cupo_m:,.0f}")
@@ -440,7 +450,10 @@ with tab_nuevos:
                             st.error(msg)
                             st.warning("Busca ID Manual 👈")
                         else:
-                            cupo = float(cli.get('clienteScoringFinanciable', 0))
+                            # --- FIX CRÍTICO APLICADO AQUÍ ---
+                            cupo = safe_float(cli.get('clienteScoringFinanciable'))
+                            # ---------------------------------
+                            
                             meses = int(cli.get('cliente_meses_atraso', 0) or 0)
                             st.success(f"{msg} (Cupo: ${cupo:,.0f})")
                             
