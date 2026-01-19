@@ -30,13 +30,9 @@ FILE_CONFIG = "recomendados.json"
 TAG_PENDIENTE = "#PENDIENTE_PAGO"
 TAG_APROBADO = "#APROBADO"
 
-# === 🛡️ CUPOS DE RESPALDO ===
+# === 🛡️ CUPOS DE RESPALDO (SOLO PARA CLIENTES NO ENCONTRADOS) ===
 CUPOS_POR_CATEGORIA = {
-    1: 50000.0,
-    2: 150000.0,
-    3: 300000.0,
-    4: 500000.0,
-    "DEFAULT": 100000.0
+    "DEFAULT": 100000.0 # 👈 Único valor usado si el cliente NO existe en base
 }
 
 if 'analisis_activo' not in st.session_state:
@@ -102,13 +98,9 @@ def tn_action(oid, action, note=None):
     
     requests.put(url, headers=headers, json=data)
 
-# === 🛒 CATÁLOGO INTELIGENTE TN (DETECTA OFERTAS AUTOMÁTICO) ===
+# === 🛒 CATÁLOGO INTELIGENTE TN ===
 @st.cache_data(ttl=600)
 def get_catalogo_tn_filtrado():
-    """
-    Trae productos y detecta automáticamente si hay oferta comparando
-    precio vs promotional_price.
-    """
     url = f"https://api.tiendanube.com/v1/{TN_ID}/products?per_page=200"
     headers = {'Authentication': f'bearer {TN_TOKEN}', 'User-Agent': TN_USER_AGENT}
     try:
@@ -121,23 +113,16 @@ def get_catalogo_tn_filtrado():
                 
                 foto_src = p['images'][0]['src']
                 
-                # --- LÓGICA DE PRECIOS Y OFERTAS ---
-                # Intentamos sacar Precio Original (Alto) y Precio Promo (Bajo)
+                # Buscamos precios
+                p_original = safe_float(p.get('price')) 
+                p_promo = safe_float(p.get('promotional_price'))
                 
-                # 1. Buscamos en la raíz del producto
-                p_original = safe_float(p.get('price')) # Precio de lista (tachado)
-                p_promo = safe_float(p.get('promotional_price')) # Precio de venta real
-                
-                # 2. Si es 0, buscamos en la primera variante
                 if (p_original == 0 and p_promo == 0) and p.get('variants'):
                     v = p['variants'][0]
                     p_original = safe_float(v.get('price'))
                     p_promo = safe_float(v.get('promotional_price'))
 
-                # Lógica de decisión final:
-                # - Si hay promo (>0) y es menor al original -> Hay Oferta
-                # - Si promo es 0 o igual al original -> No hay oferta, el precio de venta es el original
-                
+                # Lógica Oferta
                 precio_venta = 0.0
                 precio_tachado = 0.0
                 
@@ -146,12 +131,12 @@ def get_catalogo_tn_filtrado():
                     precio_tachado = p_original
                 elif p_original > 0:
                     precio_venta = p_original
-                    precio_tachado = 0.0 # No mostramos tachado
-                elif p_promo > 0: # Caso raro: solo tiene precio promo cargado
+                    precio_tachado = 0.0 
+                elif p_promo > 0:
                     precio_venta = p_promo
                     precio_tachado = 0.0
 
-                if precio_venta <= 0: continue # Si sigue siendo 0, descartamos
+                if precio_venta <= 0: continue 
 
                 # Filtro Stock
                 tiene_stock = False
@@ -164,8 +149,8 @@ def get_catalogo_tn_filtrado():
                 lista.append({
                     "id": str(p['id']),
                     "nombre": p['name']['es'],
-                    "precio_venta": precio_venta,    # El precio final a pagar
-                    "precio_lista": precio_tachado,  # El precio viejo (si hay oferta)
+                    "precio_venta": precio_venta,    
+                    "precio_lista": precio_tachado,  
                     "foto": foto_src,
                     "link": p.get('canonical_url', '#')
                 })
@@ -206,7 +191,7 @@ def detectar_perfil(nombre_prod):
     return perfil_elegido
 
 # ==========================================
-# 📧 4. GESTOR DE CORREOS (MARKETING AUTOMÁTICO)
+# 📧 4. GESTOR DE CORREOS
 # ==========================================
 
 def generar_html_correo(nombre_cliente, escenario, datos_extra={}):
@@ -231,7 +216,6 @@ def generar_html_correo(nombre_cliente, escenario, datos_extra={}):
                 
                 # LÓGICA DE MARKETING AUTOMÁTICA
                 if p_lista > p_venta:
-                    # Calculamos el % OFF real
                     pct_off = int((1 - (p_venta / p_lista)) * 100)
                     bloque_precio = f"""
                         <p style="color:#999;font-size:11px;text-decoration:line-through;margin:0;">${p_lista:,.0f}</p>
@@ -240,7 +224,6 @@ def generar_html_correo(nombre_cliente, escenario, datos_extra={}):
                         </p>
                     """
                 else:
-                    # Precio normal sin tachar
                     bloque_precio = f"""<p style="color:#28a745;font-weight:bold;margin:0;">${p_venta:,.0f}</p>"""
 
                 filas += f"""
@@ -352,12 +335,10 @@ if st.sidebar.button("Consultar"):
                 c = res[0]
                 with st.sidebar.expander("Datos Crudos"): st.json(c)
                 
+                # --- CORRECCIÓN MANUAL: Respetar API si existe ---
                 cupo = safe_float(c.get('clienteScoringFinanciable'))
-                origen = "API"
-                if cupo == 0: 
-                    cat = int(c.get('cliente_categoria', 0) or 0)
-                    cupo = CUPOS_POR_CATEGORIA.get(cat, 100000)
-                    origen = f"Respaldo Cat {cat}"
+                origen = "API (Real)"
+                # Ya NO se sobreescribe si es 0
                 
                 st.sidebar.success(f"{c.get('cliente_nombre')} {c.get('cliente_apellido')}")
                 st.sidebar.metric("Cupo", f"${cupo:,.0f}", help=origen)
@@ -365,7 +346,10 @@ if st.sidebar.button("Consultar"):
                 meses = int(c.get('cliente_meses_atraso', 0) or 0)
                 if meses > 0: st.sidebar.error(f"Mora: {meses} meses")
                 else: st.sidebar.info("Al día")
-            else: st.sidebar.error("No existe")
+            else: 
+                # Si consultan manual y no existe, avisamos
+                st.sidebar.warning("⚠️ Cliente no encontrado en BD.")
+                st.sidebar.metric("Cupo Respaldo", f"${CUPOS_POR_CATEGORIA['DEFAULT']:,.0f}")
 
 if st.sidebar.button("🔄 Actualizar Todo (Recargar)"): st.rerun()
 
@@ -408,52 +392,59 @@ with tabs[0]:
                             r = consultar_api_aria({'ident': dni})
                             if r: cli, msg = r[0], f"DNI {dni}"
                     
+                    # --- LÓGICA DE DECISIÓN CRÍTICA ---
                     if not cli:
-                        st.error(msg)
-                        with st.expander("Datos TN"): st.write(p['customer'])
-                    else:
-                        cupo = safe_float(cli.get('clienteScoringFinanciable'))
-                        origen = "API"
-                        if cupo == 0:
-                            cat = int(cli.get('cliente_categoria', 0) or 0)
-                            cupo = CUPOS_POR_CATEGORIA.get(cat, 100000)
-                            origen = f"Respaldo Cat {cat}"
+                        # CASO 1: NO EXISTE EN ARIA -> MODO RESPALDO (DEFAULT)
+                        st.warning("⚠️ Cliente no encontrado en BD. Usando perfil Respaldo.")
+                        cupo = CUPOS_POR_CATEGORIA["DEFAULT"]
+                        origen = "Respaldo (Cliente Nuevo/No encontrado)"
+                        meses = 0 # Asumimos al día
                         
-                        meses = int(cli.get('cliente_meses_atraso', 0) or 0)
-                        dif = total - cupo
-                        
-                        st.success(f"Encontrado por {msg}")
-                        col1, col2, col3 = st.columns(3)
-                        col1.metric("Cupo", f"${cupo:,.0f}", help=origen)
-                        col2.metric("Pedido", f"${total:,.0f}")
-                        col3.metric("Mora", f"{meses}m")
+                        # Mostramos datos TN por si acaso
+                        with st.expander("Ver Datos TN"): st.write(p['customer'])
 
-                        esc = 0
-                        if meses > 0: esc = 1
-                        elif total <= cupo: esc = 3
-                        else: esc = 2
-                        
-                        subj, html = generar_html_correo(nom, esc, {'cupo':cupo, 'diferencia':dif, 'id_visual':p.get('number'), 'nombre_producto_base': prod_nom})
-                        with st.expander("👁️ Ver Preview Email"): components.html(html, height=450, scrolling=True)
-                        
-                        if esc == 1:
-                            st.error("⛔ Tiene Mora")
-                            if st.button("Cancelar Pedido", key=f"b1_{oid}"):
-                                tn_action(oid, "cancel")
-                                enviar_notificacion(p['customer']['email'], nom, 1, {'id_visual':p.get('number')})
-                                st.toast("Cancelado."); time.sleep(2); st.rerun()
-                        elif esc == 2:
-                            st.warning("⚠️ Cupo Parcial")
-                            if st.button("Solicitar Diferencia", key=f"b2_{oid}"):
-                                tn_action(oid, "update_note", f"{nota} {TAG_PENDIENTE}")
-                                enviar_notificacion(p['customer']['email'], nom, 2, {'cupo':cupo, 'diferencia':dif, 'id_visual':p.get('number')})
-                                st.toast("Mail enviado."); time.sleep(2); st.rerun()
-                        elif esc == 3:
-                            st.success("🚀 Aprobable")
-                            if st.button("Aprobar", key=f"b3_{oid}"):
-                                tn_action(oid, "approve", f"{nota} {TAG_APROBADO}")
-                                enviar_notificacion(p['customer']['email'], nom, 3, {'id_visual':p.get('number')})
-                                st.balloons(); time.sleep(2); st.rerun()
+                    else:
+                        # CASO 2: SI EXISTE -> RESPETAR API 100%
+                        # Si API dice $0, ES $0. NO TOCAR.
+                        cupo = safe_float(cli.get('clienteScoringFinanciable'))
+                        origen = "API (Aria)"
+                        meses = int(cli.get('cliente_meses_atraso', 0) or 0)
+                        st.success(f"Encontrado por {msg}")
+
+                    # --- FIN LÓGICA CRÍTICA ---
+
+                    dif = total - cupo
+                    col1, col2, col3 = st.columns(3)
+                    col1.metric("Cupo", f"${cupo:,.0f}", help=origen)
+                    col2.metric("Pedido", f"${total:,.0f}")
+                    col3.metric("Mora", f"{meses}m")
+
+                    esc = 0
+                    if meses > 0: esc = 1
+                    elif total <= cupo: esc = 3
+                    else: esc = 2
+                    
+                    subj, html = generar_html_correo(nom, esc, {'cupo':cupo, 'diferencia':dif, 'id_visual':p.get('number'), 'nombre_producto_base': prod_nom})
+                    with st.expander("👁️ Ver Preview Email"): components.html(html, height=450, scrolling=True)
+                    
+                    if esc == 1:
+                        st.error("⛔ Tiene Mora")
+                        if st.button("Cancelar Pedido", key=f"b1_{oid}"):
+                            tn_action(oid, "cancel")
+                            enviar_notificacion(p['customer']['email'], nom, 1, {'id_visual':p.get('number')})
+                            st.toast("Cancelado."); time.sleep(2); st.rerun()
+                    elif esc == 2:
+                        st.warning("⚠️ Cupo Parcial")
+                        if st.button("Solicitar Diferencia", key=f"b2_{oid}"):
+                            tn_action(oid, "update_note", f"{nota} {TAG_PENDIENTE}")
+                            enviar_notificacion(p['customer']['email'], nom, 2, {'cupo':cupo, 'diferencia':dif, 'id_visual':p.get('number')})
+                            st.toast("Mail enviado."); time.sleep(2); st.rerun()
+                    elif esc == 3:
+                        st.success("🚀 Aprobable")
+                        if st.button("Aprobar", key=f"b3_{oid}"):
+                            tn_action(oid, "approve", f"{nota} {TAG_APROBADO}")
+                            enviar_notificacion(p['customer']['email'], nom, 3, {'id_visual':p.get('number')})
+                            st.balloons(); time.sleep(2); st.rerun()
 
 # --- TAB 2: PENDIENTES ---
 with tabs[1]:
@@ -476,7 +467,7 @@ with tabs[1]:
 # --- TAB 3: CONFIGURADOR ---
 with tabs[2]:
     st.header("🛒 Panel de Recomendados")
-    st.info("💡 El robot ahora detecta automáticamente si hay descuento en Tiendanube (compara Precio Lista vs Precio Promo) y agrega el cartel de 'OFF' solo.")
+    st.info("💡 El robot detecta automáticamente las ofertas (Precio Lista vs Precio Promo) desde Tiendanube.")
     
     config_actual = cargar_configuracion()
     
@@ -507,7 +498,6 @@ with tabs[2]:
                     nuevos = []
                     for nom in seleccion:
                         d = opciones[nom]
-                        # Guardamos ambos precios para que el email sepa qué hacer
                         nuevos.append({
                             "nombre":d['nombre'], 
                             "link":d['link'], 
@@ -520,7 +510,6 @@ with tabs[2]:
                     guardar_configuracion(config_actual)
                     st.success("Guardado!")
                 
-                # Preview automática con lógica de descuento
                 if items_guardados:
                     c1, c2, c3 = st.columns(3)
                     for j, item in enumerate(items_guardados[:3]):
