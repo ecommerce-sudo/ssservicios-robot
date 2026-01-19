@@ -23,7 +23,7 @@ except Exception as e:
 
 TN_USER_AGENT = "RobotWeb (24705)"
 ARIA_URL_BASE = "https://api.anatod.ar/api"
-NUMERO_WHATSAPP = "5492966840059" # 👈 TU NÚMERO LIMPIO
+NUMERO_WHATSAPP = "5492966840059" # 👈 TU NÚMERO
 FILE_CONFIG = "recomendados.json"
 
 # ETIQUETAS
@@ -103,12 +103,12 @@ def tn_action(oid, action, note=None):
     
     requests.put(url, headers=headers, json=data)
 
-# === 🛒 CATÁLOGO INTELIGENTE TN (PRECIOS CORREGIDOS) ===
+# === 🛒 CATÁLOGO INTELIGENTE TN (PRECIOS BLINDADOS) ===
 @st.cache_data(ttl=600)
 def get_catalogo_tn_filtrado():
     """
     Trae productos de TN.
-    Busca precio en: Principal, Promocional o Variante.
+    Busca precio por 'fuerza bruta' en todos los campos posibles de la API.
     Filtra por: Publicado, Foto y Stock.
     """
     url = f"https://api.tiendanube.com/v1/{TN_ID}/products?per_page=200"
@@ -124,27 +124,41 @@ def get_catalogo_tn_filtrado():
                 
                 foto_src = p['images'][0]['src']
                 
-                # 2. Búsqueda de Precio Robusta
-                p1 = p.get('price')
-                p2 = p.get('promotional_price')
-                p3 = None
-                if p.get('variants'):
-                    p3 = p['variants'][0].get('price')
+                # 2. Búsqueda de Precio en CASCADA (Fuerza Bruta)
+                # La API puede guardar el precio en cualquiera de estos lugares
+                posibles_precios = [
+                    p.get('price'),                   # Precio estándar
+                    p.get('promotional_price'),       # Precio oferta
+                    p.get('compare_at_price')         # Precio lista
+                ]
 
-                # Tomamos el primero que exista
-                raw_price = p1 or p2 or p3
-                
+                # Si tiene variantes (aunque sea la default), sumamos sus precios a la lista de búsqueda
+                if p.get('variants'):
+                    for v in p['variants']:
+                        posibles_precios.append(v.get('price'))
+                        posibles_precios.append(v.get('promotional_price'))
+                        posibles_precios.append(v.get('compare_at_price'))
+
                 precio_final = 0.0
-                try:
-                    if raw_price:
-                        precio_final = float(str(raw_price).replace(',', '.'))
-                except:
-                    precio_final = 0.0
+                
+                # Probamos uno por uno. El primero que sea mayor a 0 gana.
+                for raw in posibles_precios:
+                    try:
+                        if raw:
+                            # Limpiamos formatos raros (ej: "1,500.00" o "1500")
+                            val = float(str(raw).replace(',', '.'))
+                            if val > 0: 
+                                precio_final = val
+                                break # ¡Encontrado!
+                    except: continue
+
+                # Si después de revisar todo sigue siendo 0, el producto no sirve.
+                if precio_final <= 0: continue
 
                 # 3. Filtro Stock
                 tiene_stock = False
                 stock_val = int(p.get('stock', 0) or 0)
-                if not p.get('stock_control'): tiene_stock = True
+                if not p.get('stock_control'): tiene_stock = True # Stock infinito
                 elif stock_val > 0: tiene_stock = True
 
                 if not tiene_stock: continue
