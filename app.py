@@ -113,7 +113,6 @@ def get_catalogo_tn_filtrado():
                 
                 foto_src = p['images'][0]['src']
                 
-                # Buscamos precios
                 p_original = safe_float(p.get('price')) 
                 p_promo = safe_float(p.get('promotional_price'))
                 
@@ -122,7 +121,6 @@ def get_catalogo_tn_filtrado():
                     p_original = safe_float(v.get('price'))
                     p_promo = safe_float(v.get('promotional_price'))
 
-                # Lógica Oferta
                 precio_venta = 0.0
                 precio_tachado = 0.0
                 
@@ -138,7 +136,6 @@ def get_catalogo_tn_filtrado():
 
                 if precio_venta <= 0: continue 
 
-                # Filtro Stock
                 tiene_stock = False
                 stock_val = int(p.get('stock', 0) or 0)
                 if not p.get('stock_control'): tiene_stock = True
@@ -214,7 +211,6 @@ def generar_html_correo(nombre_cliente, escenario, datos_extra={}):
                 p_venta = item.get('precio_venta', 0)
                 p_lista = item.get('precio_lista', 0)
                 
-                # LÓGICA DE MARKETING AUTOMÁTICA
                 if p_lista > p_venta:
                     pct_off = int((1 - (p_venta / p_lista)) * 100)
                     bloque_precio = f"""
@@ -338,13 +334,12 @@ if st.sidebar.button("Consultar"):
                 # --- CORRECCIÓN MANUAL: Respetar API si existe ---
                 cupo = safe_float(c.get('clienteScoringFinanciable'))
                 origen = "API (Real)"
-                # Ya NO se sobreescribe si es 0
                 
                 st.sidebar.success(f"{c.get('cliente_nombre')} {c.get('cliente_apellido')}")
                 st.sidebar.metric("Cupo", f"${cupo:,.0f}", help=origen)
                 
                 meses = int(c.get('cliente_meses_atraso', 0) or 0)
-                if meses > 0: st.sidebar.error(f"Mora: {meses} meses")
+                if meses > 0: st.sidebar.warning(f"⚠️ Mora: {meses} meses (Cupo habilitado)")
                 else: st.sidebar.info("Al día")
             else: 
                 # Si consultan manual y no existe, avisamos
@@ -392,44 +387,48 @@ with tabs[0]:
                             r = consultar_api_aria({'ident': dni})
                             if r: cli, msg = r[0], f"DNI {dni}"
                     
-                    # --- LÓGICA DE DECISIÓN CRÍTICA ---
+                    # --- LÓGICA DE DECISIÓN CRÍTICA (CORREGIDA - TOLERANCIA MORA) ---
                     if not cli:
-                        # CASO 1: NO EXISTE EN ARIA -> MODO RESPALDO (DEFAULT)
+                        # CASO 1: NO EXISTE EN ARIA -> MODO RESPALDO
                         st.warning("⚠️ Cliente no encontrado en BD. Usando perfil Respaldo.")
                         cupo = CUPOS_POR_CATEGORIA["DEFAULT"]
                         origen = "Respaldo (Cliente Nuevo/No encontrado)"
-                        meses = 0 # Asumimos al día
-                        
-                        # Mostramos datos TN por si acaso
-                        with st.expander("Ver Datos TN"): st.write(p['customer'])
-
+                        meses = 0 
                     else:
-                        # CASO 2: SI EXISTE -> RESPETAR API 100%
-                        # Si API dice $0, ES $0. NO TOCAR.
+                        # CASO 2: SI EXISTE -> RESPETAR API (Billetera mata Mora)
                         cupo = safe_float(cli.get('clienteScoringFinanciable'))
                         origen = "API (Aria)"
                         meses = int(cli.get('cliente_meses_atraso', 0) or 0)
                         st.success(f"Encontrado por {msg}")
-
-                    # --- FIN LÓGICA CRÍTICA ---
 
                     dif = total - cupo
                     col1, col2, col3 = st.columns(3)
                     col1.metric("Cupo", f"${cupo:,.0f}", help=origen)
                     col2.metric("Pedido", f"${total:,.0f}")
                     col3.metric("Mora", f"{meses}m")
+                    
+                    if meses > 0 and cupo > 0:
+                        st.warning(f"⚠️ Cliente con mora técnica ({meses}m), pero tiene Cupo. Se permite operar.")
 
+                    # --- LÓGICA DE ESCENARIOS (DEFINITIVA) ---
                     esc = 0
-                    if meses > 0: esc = 1
-                    elif total <= cupo: esc = 3
-                    else: esc = 2
+                    
+                    # PRIORIDAD 1: Si no hay cupo, es RECHAZO (sin importar la mora)
+                    if cupo == 0:
+                        esc = 1 # RECHAZO (Sin Cupo / Mora Grave que anuló el cupo)
+                    
+                    # PRIORIDAD 2: Si hay cupo, se aprueba o se pide diferencia
+                    elif total <= cupo:
+                        esc = 3 # APROBADO (Alcanza el cupo)
+                    else:
+                        esc = 2 # DIFERENCIA (Hay cupo pero falta)
                     
                     subj, html = generar_html_correo(nom, esc, {'cupo':cupo, 'diferencia':dif, 'id_visual':p.get('number'), 'nombre_producto_base': prod_nom})
                     with st.expander("👁️ Ver Preview Email"): components.html(html, height=450, scrolling=True)
                     
                     if esc == 1:
-                        st.error("⛔ Tiene Mora")
-                        if st.button("Cancelar Pedido", key=f"b1_{oid}"):
+                        st.error("⛔ Rechazo (Cupo $0)")
+                        if st.button("Rechazar y Cancelar", key=f"b1_{oid}"):
                             tn_action(oid, "cancel")
                             enviar_notificacion(p['customer']['email'], nom, 1, {'id_visual':p.get('number')})
                             st.toast("Cancelado."); time.sleep(2); st.rerun()
