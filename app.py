@@ -22,15 +22,26 @@ except Exception as e:
 TN_USER_AGENT = "RobotWeb (24705)"
 ARIA_URL_BASE = "https://api.anatod.ar/api"
 
-# ETIQUETAS
+# ETIQUETAS TIENDANUBE
 TAG_PENDIENTE = "#PENDIENTE_PAGO"
 TAG_APROBADO = "#APROBADO"
+
+# === 🛡️ CUPOS DE RESPALDO (NUEVO) ===
+# Si la API devuelve 0 o NULL (por mora o corte), el robot usará estos valores 
+# según la "cliente_categoria" para no trabar la venta.
+CUPOS_POR_CATEGORIA = {
+    1: 50000.0,   # Categoría Básica
+    2: 150000.0,  # Categoría Intermedia
+    3: 300000.0,  # Categoría Alta (Caso Luisa)
+    4: 500000.0,  # VIP
+    "DEFAULT": 100000.0 # Si no tiene categoría asignada
+}
 
 if 'analisis_activo' not in st.session_state:
     st.session_state['analisis_activo'] = {}
 
 # ==========================================
-# 🧠 CEREBRO DE CROSS-SELLING (TUS REGLAS)
+# 🧠 CEREBRO DE CROSS-SELLING
 # ==========================================
 PERFILES_INTERES = {
     "GAMING": {
@@ -72,15 +83,12 @@ PERFILES_INTERES = {
 # ==========================================
 
 def safe_float(value):
-    """Convierte valores a float de forma segura, evitando errores con None."""
+    """Convierte valores a float de forma segura."""
     try:
-        if value is None or value == "":
-            return 0.0
-        # Limpieza básica de moneda si viene con símbolos
+        if value is None or value == "": return 0.0
         clean_val = str(value).replace("$", "").replace(" ", "").replace(",", ".")
         return float(clean_val)
-    except (ValueError, TypeError):
-        return 0.0
+    except: return 0.0
 
 def solo_numeros(texto):
     if texto is None: return ""
@@ -120,30 +128,21 @@ def obtener_pedidos(estado="open"):
         return []
 
 # --- FUNCIONES INTELIGENTES PARA CROSS SELLING ---
-
 @st.cache_data(ttl=3600)
 def obtener_info_desde_item(item_dict):
-    """
-    Toma un diccionario {link, foto} y completa el precio y nombre desde TN.
-    """
     link_producto = item_dict.get('link', '#')
     foto_manual = item_dict.get('foto', '')
-    
     resultado = {
-        'nombre': "Producto Recomendado",
-        'precio': 0,
+        'nombre': "Producto Recomendado", 'precio': 0,
         'foto': foto_manual if foto_manual else "https://via.placeholder.com/150?text=Ver+Web",
         'url': link_producto
     }
-
     try:
         slug = link_producto.strip("/").split("/")[-1]
         nombre_busqueda = slug.replace("-", " ") 
-        
         url = f"https://api.tiendanube.com/v1/{TN_ID}/products"
         params = {'q': nombre_busqueda, 'per_page': 1}
         headers = {'Authentication': f'bearer {TN_TOKEN}', 'User-Agent': TN_USER_AGENT}
-        
         res = requests.get(url, headers=headers, params=params)
         if res.status_code == 200 and len(res.json()) > 0:
             p = res.json()[0]
@@ -151,45 +150,35 @@ def obtener_info_desde_item(item_dict):
             if p.get('images'): img_api = p['images'][0]['src']
             resultado['nombre'] = p['name']['es']
             resultado['precio'] = float(p.get('price', 0)) if p.get('price') else 0
-            if not foto_manual:
-                resultado['foto'] = img_api
-    except Exception as e:
-        print(f"Error buscando producto: {e}")
-    
+            if not foto_manual: resultado['foto'] = img_api
+    except: pass
     return resultado
 
 def generar_recomendaciones(nombre_producto_comprado):
     nombre_lower = str(nombre_producto_comprado).lower()
     perfil_detectado = "HOGAR" 
-    
     for perfil, datos in PERFILES_INTERES.items():
         for kw in datos['keywords']:
             if kw in nombre_lower:
                 perfil_detectado = perfil
                 break
         if perfil_detectado != "HOGAR": break
-    
     items_objetivo = PERFILES_INTERES[perfil_detectado]['items']
     productos_finales = []
     for item in items_objetivo:
         info = obtener_info_desde_item(item)
         if info: productos_finales.append(info)
-        
     return productos_finales, perfil_detectado
 
 # --- FUNCIONES DE ACCIÓN ---
-
 def aprobar_orden_completa(id_pedido, nota_actual, etiqueta_poner, etiqueta_sacar=None):
     url = f"https://api.tiendanube.com/v1/{TN_ID}/orders/{id_pedido}"
     headers = {'Authentication': f'bearer {TN_TOKEN}', 'User-Agent': TN_USER_AGENT, 'Content-Type': 'application/json'}
-    
     nota_str = str(nota_actual) if nota_actual is not None else ""
     if etiqueta_sacar: nota_str = nota_str.replace(etiqueta_sacar, "")
     if etiqueta_poner and etiqueta_poner not in nota_str: nota_str = f"{nota_str} {etiqueta_poner}"
     nota_final = nota_str.strip()
-    
     payload = {"payment_status": "paid", "owner_note": nota_final}
-    
     try:
         res = requests.put(url, headers=headers, json=payload)
         if res.status_code == 200: return True
@@ -197,11 +186,9 @@ def aprobar_orden_completa(id_pedido, nota_actual, etiqueta_poner, etiqueta_saca
             if res.status_code == 422: 
                 requests.put(url, headers=headers, json={"owner_note": nota_final})
                 return True 
-            st.error(f"❌ Error Tiendanube: {res.status_code} - {res.text}")
+            st.error(f"❌ Error Tiendanube: {res.status_code}")
             return False
-    except Exception as e:
-        st.error(f"❌ Error de conexión: {e}")
-        return False
+    except: return False
 
 def actualizar_etiqueta(id_pedido, nota_actual, etiqueta_poner, etiqueta_sacar=None):
     url = f"https://api.tiendanube.com/v1/{TN_ID}/orders/{id_pedido}"
@@ -210,8 +197,7 @@ def actualizar_etiqueta(id_pedido, nota_actual, etiqueta_poner, etiqueta_sacar=N
     if etiqueta_sacar: nota_str = nota_str.replace(etiqueta_sacar, "")
     if etiqueta_poner and etiqueta_poner not in nota_str: nota_str = f"{nota_str} {etiqueta_poner}"
     res = requests.put(url, headers=headers, json={"owner_note": nota_str.strip()})
-    if res.status_code != 200: return False
-    return True
+    return res.status_code == 200
 
 def cancelar_orden_tn(id_pedido):
     url = f"https://api.tiendanube.com/v1/{TN_ID}/orders/{id_pedido}/cancel"
@@ -228,93 +214,46 @@ def enviar_notificacion(email_cliente, nombre_cliente, escenario, datos_extra={}
         SMTP_PORT = st.secrets["email"]["smtp_port"]
         SMTP_USER = st.secrets["email"]["smtp_user"]
         SMTP_PASS = st.secrets["email"]["smtp_password"]
-    except:
-        st.warning("⚠️ Faltan datos de email en Secrets.")
-        return False
+    except: return False
     
     NUMERO_WHATSAPP = "5491153748291" 
     id_visual = datos_extra.get('id_visual', 'S/N')
     
     html_cross = ""
     nombre_prod_base = datos_extra.get('nombre_producto_base', '')
-    
     if nombre_prod_base:
         recomendados, perfil = generar_recomendaciones(nombre_prod_base)
         if recomendados:
             filas = ""
             for p in recomendados:
                 precio_fmt = f"${p['precio']:,.0f}" if p['precio'] > 0 else "Ver Precio"
-                filas += f"""
-                <td style="width: 33%; padding: 10px; text-align: center; border: 1px solid #f0f0f0; border-radius: 8px; background: #fff;">
-                    <a href="{p['url']}" style="text-decoration: none; color: #333; display: block;">
-                        <img src="{p['foto']}" alt="{p['nombre']}" style="width: 100%; max-width: 120px; height: 120px; object-fit: contain; margin-bottom: 10px;">
-                        <p style="font-size: 13px; margin: 0 0 5px; height: 36px; overflow: hidden; line-height: 1.2;"><strong>{p['nombre']}</strong></p>
-                        <p style="color: #28a745; font-weight: bold; font-size: 14px; margin: 5px 0;">{precio_fmt}</p>
-                        <div style="background: #007bff; color: white; padding: 6px 10px; border-radius: 4px; font-size: 12px; display: inline-block;">VER OFERTA</div>
-                    </a>
-                </td>
-                """
-            
-            html_cross = f"""
-            <div style="background-color: #f9f9f9; padding: 20px; border-radius: 10px; margin-top: 30px; border: 1px solid #eee;">
-                <h3 style="text-align: center; color: #444; margin-top: 0;">🔥 Recomendados para vos ({perfil}) 🔥</h3>
-                <p style="text-align: center; font-size: 13px; color: #777; margin-bottom: 15px;">Completá tu experiencia con estos accesorios:</p>
-                <table width="100%" cellpadding="5" cellspacing="5" style="border-collapse: separate; border-spacing: 10px;">
-                    <tr>{filas}</tr>
-                </table>
-            </div>
-            """
+                filas += f"""<td style="width:33%;padding:10px;text-align:center;border:1px solid #f0f0f0;border-radius:8px;background:#fff;"><a href="{p['url']}" style="text-decoration:none;color:#333;display:block;"><img src="{p['foto']}" alt="{p['nombre']}" style="width:100%;max-width:120px;height:120px;object-fit:contain;margin-bottom:10px;"><p style="font-size:13px;margin:0 0 5px;height:36px;overflow:hidden;"><strong>{p['nombre']}</strong></p><p style="color:#28a745;font-weight:bold;">{precio_fmt}</p><div style="background:#007bff;color:white;padding:6px 10px;border-radius:4px;font-size:12px;display:inline-block;">VER OFERTA</div></a></td>"""
+            html_cross = f"""<div style="background-color:#f9f9f9;padding:20px;border-radius:10px;margin-top:30px;border:1px solid #eee;"><h3 style="text-align:center;color:#444;margin-top:0;">🔥 Recomendados ({perfil}) 🔥</h3><table width="100%" cellpadding="5" cellspacing="5" style="border-collapse:separate;border-spacing:10px;"><tr>{filas}</tr></table></div>"""
 
     msg = MIMEMultipart()
     msg['From'] = f"SSServicios <{SMTP_USER}>"
     msg['To'] = email_cliente
-    style_base = "font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; color: #333; line-height: 1.6; max-width: 600px; margin: auto;"
     
     if escenario == 1: # RECHAZADO
         msg['Subject'] = f"Actualización pedido #{id_visual}"
-        cuerpo_txt = f"""
-            <p>Hola <strong>{nombre_cliente}</strong>,</p>
-            <p>Recibimos tu pedido <strong>#{id_visual}</strong>. Al procesar la financiación, el sistema indica que no tenés cupo disponible actualmente.</p>
-            <p><strong>¡No pierdas tu compra!</strong> Reservamos tu pedido 24hs para que abones con transferencia o tarjeta.</p>
-            <p>Respondé este mail para solicitar el link de pago.</p>
-        """
+        cuerpo_txt = f"<p>Hola <strong>{nombre_cliente}</strong>, tu pedido <strong>#{id_visual}</strong> no pudo ser financiado por falta de cupo. Reservamos tu pedido 24hs. Respondé para pagar con otro medio.</p>"
     elif escenario == 2: # DIFERENCIA
         cupo = datos_extra.get('cupo', 0)
         dif = datos_extra.get('diferencia', 0)
-        texto_ws = f"Hola SSServicios, envío comprobante diferencia pedido #{id_visual}."
-        link_ws = f"https://wa.me/{NUMERO_WHATSAPP}?text={urllib.parse.quote(texto_ws)}"
-        
+        link_ws = f"https://wa.me/{NUMERO_WHATSAPP}?text={urllib.parse.quote(f'Hola, envío diferencia pedido #{id_visual}')}"
         msg['Subject'] = f"Finalizá tu pedido #{id_visual}"
-        cuerpo_txt = f"""
-            <p>Hola <strong>{nombre_cliente}</strong>,</p>
-            <p>¡Buenas noticias! Aprobamos parcialmente tu financiación.<br>
-            Cupo disponible: <strong>${cupo:,.0f}</strong></p>
-            <div style="background: #fff3cd; padding: 15px; border-left: 5px solid #ffc107; margin: 15px 0;">
-                <p style="margin:0">Resta abonar una diferencia de: <strong style="font-size:1.2em">${dif:,.0f}</strong></p>
-            </div>
-            <p><strong>Transferencia:</strong><br>Banco BBVA | CBU: 0170272120000001018527<br>Alias: SSSERVICIOS.MP</p>
-            <p style="text-align: center; margin-top: 20px;">
-                <a href="{link_ws}" style="background: #25D366; color: white; padding: 12px 20px; text-decoration: none; border-radius: 5px; font-weight: bold;">👉 ENVIAR COMPROBANTE</a>
-            </p>
-        """
+        cuerpo_txt = f"<p>Hola <strong>{nombre_cliente}</strong>, aprobamos parcialmente tu financiación (Cupo: <strong>${cupo:,.0f}</strong>).<br>Resta abonar: <strong>${dif:,.0f}</strong>.</p><p>Transferencia: BBVA | CBU: 0170272120000001018527<br><a href='{link_ws}'>ENVIAR COMPROBANTE</a></p>"
     elif escenario == 3: # APROBADO
         msg['Subject'] = f"¡Aprobado! Pedido #{id_visual} ✅"
-        cuerpo_txt = f"""
-            <p>Hola <strong>{nombre_cliente}</strong>,</p>
-            <p>Confirmamos que la financiación de tu pedido <strong>#{id_visual}</strong> fue <strong>APROBADA</strong>.</p>
-            <p>El importe se verá en tu próxima factura en 3 cuotas sin interés. Ya estamos preparando tu paquete.</p>
-            <p>¡Gracias por elegirnos!</p>
-        """
+        cuerpo_txt = f"<p>Hola <strong>{nombre_cliente}</strong>, confirmamos que la financiación de tu pedido <strong>#{id_visual}</strong> fue <strong>APROBADA</strong>.</p>"
     else: return False
 
-    html_final = f"""<div style="{style_base}">{cuerpo_txt}{html_cross}<br><hr style="border:0;border-top:1px solid #eee"><small style="color:#999">SSServicios Team</small></div>"""
+    html_final = f"""<div style="font-family:Helvetica,Arial;color:#333;line-height:1.6;max-width:600px;margin:auto;">{cuerpo_txt}{html_cross}<br><hr style="border:0;border-top:1px solid #eee"><small style="color:#999">SSServicios Team</small></div>"""
     msg.attach(MIMEText(html_final, 'html'))
     
     try:
-        if SMTP_PORT == 465: server = smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT)
-        else:
-            server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
-            server.starttls()
+        server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
+        server.starttls()
         server.login(SMTP_USER, SMTP_PASS)
         server.sendmail(SMTP_USER, email_cliente, msg.as_string())
         server.quit()
@@ -383,13 +322,24 @@ if st.sidebar.button("Consultar Cupo"):
                 cli_m = res_manual[0]
                 nom_m = f"{cli_m.get('cliente_nombre','')} {cli_m.get('cliente_apellido','')}"
                 
-                # --- AQUI TAMBIEN MOSTRAMOS TODO POR SI ACASO ---
-                st.sidebar.json(cli_m) 
-                
+                # --- INFO DEBUG EN SIDEBAR ---
+                st.sidebar.caption("Datos Crudos (Debug):")
+                st.sidebar.json(cli_m, expanded=False)
+                # -----------------------------
+
                 cupo_m = safe_float(cli_m.get('clienteScoringFinanciable'))
+                
+                # LÓGICA DE RESPALDO SIDEBAR TAMBIÉN
+                origen_cupo_m = "API"
+                if cupo_m == 0:
+                    cat_m = int(cli_m.get('cliente_categoria', 0) or 0)
+                    cupo_m = CUPOS_POR_CATEGORIA.get(cat_m, CUPOS_POR_CATEGORIA["DEFAULT"])
+                    origen_cupo_m = f"CAT {cat_m}"
+
                 meses_m = int(cli_m.get('cliente_meses_atraso', 0) or 0)
                 st.sidebar.success(f"✅ **{nom_m}**")
-                st.sidebar.metric("Cupo Disponible", f"${cupo_m:,.0f}")
+                st.sidebar.metric("Cupo Disponible", f"${cupo_m:,.0f}", help=f"Origen: {origen_cupo_m}")
+                
                 if meses_m > 0: st.sidebar.error(f"⛔ Mora: {meses_m} meses")
                 else: st.sidebar.info("✅ Al día")
             else: st.sidebar.error("❌ Cliente no existe.")
@@ -437,20 +387,37 @@ with tab_nuevos:
                             st.warning("Busca ID Manual 👈")
                         else:
                             # ===============================================
-                            # 🕵️‍♂️ MODO DEBUG PARA ENCONTRAR EL CUPO
+                            # 🟢 LÓGICA INTELIGENTE DE CUPO (FIX FINAL)
                             # ===============================================
-                            with st.expander("🕵️‍♂️ VER DATOS CRUDOS DE ARIA (DEBUG)"):
-                                st.info("Buscá el campo que tenga el valor del cupo y decime el nombre.")
-                                st.json(cli)
-                            # ===============================================
-
                             cupo = safe_float(cli.get('clienteScoringFinanciable'))
+                            origen_cupo = "API Anatod"
+                            
+                            # Si la API da 0 o NULL, usamos el respaldo por Categoría
+                            if cupo == 0:
+                                categoria = int(cli.get('cliente_categoria', 0) or 0)
+                                cupo = CUPOS_POR_CATEGORIA.get(categoria, CUPOS_POR_CATEGORIA["DEFAULT"])
+                                origen_cupo = f"Respaldo (Cat. {categoria})"
+
                             meses = int(cli.get('cliente_meses_atraso', 0) or 0)
                             
-                            st.success(f"{msg} (Cupo: ${cupo:,.0f})")
+                            st.success(f"{msg}")
                             
+                            # Métricas visuales
+                            col_a, col_b, col_c = st.columns(3)
+                            col_a.metric("Cupo Asignado", f"${cupo:,.0f}", help=origen_cupo)
+                            col_b.metric("Total Pedido", f"${total:,.0f}")
+                            col_c.metric("Situación", "Al día" if meses == 0 else f"Mora {meses}m")
+
+                            if origen_cupo != "API Anatod":
+                                st.caption(f"ℹ️ Cupo calculado por **Categoría {cli.get('cliente_categoria')}** (La API no reportó valor).")
+
+                            # DEBUG OPCIONAL
+                            with st.expander("🕵️‍♂️ Ver Datos Crudos"):
+                                st.json(cli)
+                            
+                            # DECISIONES
                             if meses > 0:
-                                st.error(f"⛔ MORA: {meses} meses")
+                                st.error(f"⛔ Cliente con MORA ({meses} meses).")
                                 if st.button("📧 Rechazar (Mora)", key=f"r_{id_real}"):
                                     if enviar_notificacion(mail, nom, 1, {'id_visual': id_visual, 'nombre_producto_base': nombre_prod_principal}):
                                         actualizar_etiqueta(id_real, nota, TAG_PENDIENTE)
@@ -463,7 +430,7 @@ with tab_nuevos:
                                         st.toast("¡Aprobado!"); time.sleep(2); st.rerun()
                             else:
                                 dif = total - cupo
-                                st.warning(f"⚠️ Faltan ${dif:,.0f}")
+                                st.warning(f"⚠️ Cupo parcial. Faltan ${dif:,.0f}")
                                 if st.button("📧 Pedir Diferencia", key=f"dif_{id_real}"):
                                     if enviar_notificacion(mail, nom, 2, {'cupo': cupo, 'diferencia': dif, 'id_visual': id_visual, 'nombre_producto_base': nombre_prod_principal}):
                                         actualizar_etiqueta(id_real, nota, TAG_PENDIENTE)
