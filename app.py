@@ -23,7 +23,7 @@ except Exception as e:
 
 TN_USER_AGENT = "RobotWeb (24705)"
 ARIA_URL_BASE = "https://api.anatod.ar/api"
-NUMERO_WHATSAPP = "5492966840059" # 👈 TU NÚMERO
+NUMERO_WHATSAPP = "5492966840059"
 FILE_CONFIG = "recomendados.json"
 
 # ETIQUETAS
@@ -81,7 +81,6 @@ def consultar_api_aria(params):
     except: return []
 
 def obtener_pedidos(estado="open"):
-    # Traemos 200 para asegurar
     url = f"https://api.tiendanube.com/v1/{TN_ID}/orders?status={estado}&per_page=200"
     headers = {'Authentication': f'bearer {TN_TOKEN}', 'User-Agent': TN_USER_AGENT}
     try:
@@ -103,13 +102,12 @@ def tn_action(oid, action, note=None):
     
     requests.put(url, headers=headers, json=data)
 
-# === 🛒 CATÁLOGO INTELIGENTE TN (PRECIOS BLINDADOS) ===
+# === 🛒 CATÁLOGO INTELIGENTE TN (DETECTA OFERTAS AUTOMÁTICO) ===
 @st.cache_data(ttl=600)
 def get_catalogo_tn_filtrado():
     """
-    Trae productos de TN.
-    Busca precio por 'fuerza bruta' en todos los campos posibles de la API.
-    Filtra por: Publicado, Foto y Stock.
+    Trae productos y detecta automáticamente si hay oferta comparando
+    precio vs promotional_price.
     """
     url = f"https://api.tiendanube.com/v1/{TN_ID}/products?per_page=200"
     headers = {'Authentication': f'bearer {TN_TOKEN}', 'User-Agent': TN_USER_AGENT}
@@ -118,47 +116,47 @@ def get_catalogo_tn_filtrado():
         if res.status_code == 200:
             lista = []
             for p in res.json():
-                # 1. Filtros básicos
                 if not p.get('published'): continue
                 if not p.get('images') or len(p['images']) == 0: continue
                 
                 foto_src = p['images'][0]['src']
                 
-                # 2. Búsqueda de Precio en CASCADA (Fuerza Bruta)
-                # La API puede guardar el precio en cualquiera de estos lugares
-                posibles_precios = [
-                    p.get('price'),                   # Precio estándar
-                    p.get('promotional_price'),       # Precio oferta
-                    p.get('compare_at_price')         # Precio lista
-                ]
-
-                # Si tiene variantes (aunque sea la default), sumamos sus precios a la lista de búsqueda
-                if p.get('variants'):
-                    for v in p['variants']:
-                        posibles_precios.append(v.get('price'))
-                        posibles_precios.append(v.get('promotional_price'))
-                        posibles_precios.append(v.get('compare_at_price'))
-
-                precio_final = 0.0
+                # --- LÓGICA DE PRECIOS Y OFERTAS ---
+                # Intentamos sacar Precio Original (Alto) y Precio Promo (Bajo)
                 
-                # Probamos uno por uno. El primero que sea mayor a 0 gana.
-                for raw in posibles_precios:
-                    try:
-                        if raw:
-                            # Limpiamos formatos raros (ej: "1,500.00" o "1500")
-                            val = float(str(raw).replace(',', '.'))
-                            if val > 0: 
-                                precio_final = val
-                                break # ¡Encontrado!
-                    except: continue
+                # 1. Buscamos en la raíz del producto
+                p_original = safe_float(p.get('price')) # Precio de lista (tachado)
+                p_promo = safe_float(p.get('promotional_price')) # Precio de venta real
+                
+                # 2. Si es 0, buscamos en la primera variante
+                if (p_original == 0 and p_promo == 0) and p.get('variants'):
+                    v = p['variants'][0]
+                    p_original = safe_float(v.get('price'))
+                    p_promo = safe_float(v.get('promotional_price'))
 
-                # Si después de revisar todo sigue siendo 0, el producto no sirve.
-                if precio_final <= 0: continue
+                # Lógica de decisión final:
+                # - Si hay promo (>0) y es menor al original -> Hay Oferta
+                # - Si promo es 0 o igual al original -> No hay oferta, el precio de venta es el original
+                
+                precio_venta = 0.0
+                precio_tachado = 0.0
+                
+                if p_promo > 0 and p_promo < p_original:
+                    precio_venta = p_promo
+                    precio_tachado = p_original
+                elif p_original > 0:
+                    precio_venta = p_original
+                    precio_tachado = 0.0 # No mostramos tachado
+                elif p_promo > 0: # Caso raro: solo tiene precio promo cargado
+                    precio_venta = p_promo
+                    precio_tachado = 0.0
 
-                # 3. Filtro Stock
+                if precio_venta <= 0: continue # Si sigue siendo 0, descartamos
+
+                # Filtro Stock
                 tiene_stock = False
                 stock_val = int(p.get('stock', 0) or 0)
-                if not p.get('stock_control'): tiene_stock = True # Stock infinito
+                if not p.get('stock_control'): tiene_stock = True
                 elif stock_val > 0: tiene_stock = True
 
                 if not tiene_stock: continue
@@ -166,7 +164,8 @@ def get_catalogo_tn_filtrado():
                 lista.append({
                     "id": str(p['id']),
                     "nombre": p['name']['es'],
-                    "precio": precio_final,
+                    "precio_venta": precio_venta,    # El precio final a pagar
+                    "precio_lista": precio_tachado,  # El precio viejo (si hay oferta)
                     "foto": foto_src,
                     "link": p.get('canonical_url', '#')
                 })
@@ -175,14 +174,14 @@ def get_catalogo_tn_filtrado():
     except: return []
 
 # ==========================================
-# 💾 3. GESTIÓN DE CONFIGURACIÓN (JSON)
+# 💾 3. GESTIÓN DE CONFIGURACIÓN
 # ==========================================
 
 DEFAULT_CONFIG = {
-    "GAMING": {"keywords": ["gamer", "juego", "play", "ps4", "pc", "mouse"], "items": []},
-    "CONECTIVIDAD": {"keywords": ["wifi", "router", "internet", "cable", "starlink"], "items": []},
-    "MOVILIDAD": {"keywords": ["celular", "samsung", "iphone", "cargador", "usb"], "items": []},
-    "HOGAR": {"keywords": ["tv", "smart", "casa", "electro", "freidora"], "items": []}
+    "GAMING": {"keywords": ["gamer", "juego", "play", "ps4", "pc"], "items": []},
+    "CONECTIVIDAD": {"keywords": ["wifi", "router", "internet"], "items": []},
+    "MOVILIDAD": {"keywords": ["celular", "samsung", "iphone"], "items": []},
+    "HOGAR": {"keywords": ["tv", "smart", "casa", "electro"], "items": []}
 }
 
 def cargar_configuracion():
@@ -207,7 +206,7 @@ def detectar_perfil(nombre_prod):
     return perfil_elegido
 
 # ==========================================
-# 📧 4. GESTOR DE CORREOS
+# 📧 4. GESTOR DE CORREOS (MARKETING AUTOMÁTICO)
 # ==========================================
 
 def generar_html_correo(nombre_cliente, escenario, datos_extra={}):
@@ -221,19 +220,36 @@ def generar_html_correo(nombre_cliente, escenario, datos_extra={}):
     if nombre_prod_base:
         perfil = detectar_perfil(nombre_prod_base)
         config = cargar_configuracion()
-        items = config.get(perfil, config["HOGAR"])["items"]
+        categoria_data = config.get(perfil, config["HOGAR"])
+        items = categoria_data["items"]
         
         if items:
             filas = ""
             for item in items[:3]:
-                precio_fmt = f"${item['precio']:,.0f}"
+                p_venta = item.get('precio_venta', 0)
+                p_lista = item.get('precio_lista', 0)
+                
+                # LÓGICA DE MARKETING AUTOMÁTICA
+                if p_lista > p_venta:
+                    # Calculamos el % OFF real
+                    pct_off = int((1 - (p_venta / p_lista)) * 100)
+                    bloque_precio = f"""
+                        <p style="color:#999;font-size:11px;text-decoration:line-through;margin:0;">${p_lista:,.0f}</p>
+                        <p style="color:#28a745;font-weight:bold;font-size:14px;margin:0;">
+                            ${p_venta:,.0f} <span style="background:#dc3545;color:white;padding:1px 3px;border-radius:3px;font-size:10px;">{pct_off}% OFF</span>
+                        </p>
+                    """
+                else:
+                    # Precio normal sin tachar
+                    bloque_precio = f"""<p style="color:#28a745;font-weight:bold;margin:0;">${p_venta:,.0f}</p>"""
+
                 filas += f"""
                 <td style="width:33%;padding:10px;text-align:center;border:1px solid #f0f0f0;border-radius:8px;background:#fff;">
                     <a href="{item['link']}" style="text-decoration:none;color:#333;display:block;">
                         <img src="{item['foto']}" style="width:100%;max-width:120px;height:120px;object-fit:contain;margin-bottom:10px;">
                         <p style="font-size:12px;margin:0 0 5px;height:32px;overflow:hidden;line-height:1.2;"><strong>{item['nombre']}</strong></p>
-                        <p style="color:#28a745;font-weight:bold;margin:0;">{precio_fmt}</p>
-                        <div style="background:#007bff;color:white;padding:5px 10px;border-radius:4px;font-size:11px;margin-top:5px;display:inline-block;">VER</div>
+                        {bloque_precio}
+                        <div style="background:#007bff;color:white;padding:5px 10px;border-radius:4px;font-size:11px;margin-top:5px;display:inline-block;">VER OFERTA</div>
                     </a>
                 </td>
                 """
@@ -380,7 +396,6 @@ with tabs[0]:
                 
                 if st.session_state.get(f"analizar_{oid}"):
                     st.markdown("---")
-                    # Busqueda Cascada
                     cli, msg = None, "No encontrado"
                     ids_nota = re.findall(r'\b\d{3,7}\b', str(nota))
                     for pid in ids_nota:
@@ -397,7 +412,6 @@ with tabs[0]:
                         st.error(msg)
                         with st.expander("Datos TN"): st.write(p['customer'])
                     else:
-                        # Lógica Cupo
                         cupo = safe_float(cli.get('clienteScoringFinanciable'))
                         origen = "API"
                         if cupo == 0:
@@ -414,17 +428,14 @@ with tabs[0]:
                         col2.metric("Pedido", f"${total:,.0f}")
                         col3.metric("Mora", f"{meses}m")
 
-                        # Escenarios
                         esc = 0
                         if meses > 0: esc = 1
                         elif total <= cupo: esc = 3
                         else: esc = 2
                         
-                        # Preview
                         subj, html = generar_html_correo(nom, esc, {'cupo':cupo, 'diferencia':dif, 'id_visual':p.get('number'), 'nombre_producto_base': prod_nom})
                         with st.expander("👁️ Ver Preview Email"): components.html(html, height=450, scrolling=True)
                         
-                        # Botones Acción
                         if esc == 1:
                             st.error("⛔ Tiene Mora")
                             if st.button("Cancelar Pedido", key=f"b1_{oid}"):
@@ -447,9 +458,7 @@ with tabs[0]:
 # --- TAB 2: PENDIENTES ---
 with tabs[1]:
     pends = [p for p in pedidos_open if TAG_PENDIENTE in (p.get('owner_note') or "")]
-    
-    if not pends:
-        st.info("✅ No hay pedidos pendientes de diferencia.")
+    if not pends: st.info("✅ No hay pedidos pendientes de diferencia.")
     else:
         st.write(f"Esperando diferencia de: {len(pends)} pedidos.")
         for p in pends:
@@ -460,7 +469,6 @@ with tabs[1]:
                      tn_action(p['id'], "approve", f"{p.get('owner_note')} {TAG_APROBADO}")
                      enviar_notificacion(p['customer']['email'], p['customer']['name'], 3, {'id_visual':p.get('number'), 'nombre_producto_base': prod_nom})
                      st.success("Aprobado y Mail Enviado"); time.sleep(2); st.rerun()
-                 
                  if col_x.button("🚫 Cancelar", key=f"cx_{p['id']}"):
                      tn_action(p['id'], "cancel")
                      st.error("Cancelado"); time.sleep(2); st.rerun()
@@ -468,24 +476,22 @@ with tabs[1]:
 # --- TAB 3: CONFIGURADOR ---
 with tabs[2]:
     st.header("🛒 Panel de Recomendados")
-    st.caption("Seleccioná productos reales de tu tienda. Solo aparecen los que tienen foto y stock.")
+    st.info("💡 El robot ahora detecta automáticamente si hay descuento en Tiendanube (compara Precio Lista vs Precio Promo) y agrega el cartel de 'OFF' solo.")
     
     config_actual = cargar_configuracion()
     
-    if st.button("🔄 Cargar Productos de Tiendanube"):
+    if st.button("🔄 Recargar Catálogo de Tiendanube"):
         catalogo = get_catalogo_tn_filtrado()
-        if not catalogo:
-            st.warning("No se encontraron productos o hubo error de conexión.")
+        if not catalogo: st.warning("Error o catálogo vacío.")
         else:
             st.session_state['catalogo_tn'] = catalogo
-            st.success(f"Cargados {len(catalogo)} productos aptos.")
+            st.success(f"Cargados {len(catalogo)} productos.")
 
     catalogo = st.session_state.get('catalogo_tn', [])
     
     if catalogo:
         opciones = {p['nombre']: p for p in catalogo}
         nombres = list(opciones.keys())
-        
         col_a, col_b = st.columns(2)
         categorias = ["GAMING", "CONECTIVIDAD", "MOVILIDAD", "HOGAR"]
         
@@ -495,33 +501,42 @@ with tabs[2]:
                 
                 items_guardados = config_actual.get(perfil, {}).get("items", [])
                 defaults = [x['nombre'] for x in items_guardados if x['nombre'] in nombres]
-                
-                seleccion = st.multiselect(
-                    f"Elegí 3 productos:",
-                    options=nombres,
-                    default=defaults,
-                    max_selections=3,
-                    key=f"sel_{perfil}"
-                )
+                seleccion = st.multiselect(f"Productos {perfil}:", options=nombres, default=defaults, max_selections=3, key=f"sel_{perfil}")
                 
                 if st.button(f"Guardar {perfil}", key=f"save_{perfil}"):
                     nuevos = []
                     for nom in seleccion:
                         d = opciones[nom]
-                        nuevos.append({"nombre":d['nombre'], "link":d['link'], "foto":d['foto'], "precio":d['precio']})
+                        # Guardamos ambos precios para que el email sepa qué hacer
+                        nuevos.append({
+                            "nombre":d['nombre'], 
+                            "link":d['link'], 
+                            "foto":d['foto'], 
+                            "precio_venta":d['precio_venta'],
+                            "precio_lista":d['precio_lista']
+                        })
                     
                     config_actual[perfil]["items"] = nuevos
                     guardar_configuracion(config_actual)
                     st.success("Guardado!")
                 
+                # Preview automática con lógica de descuento
                 if items_guardados:
                     c1, c2, c3 = st.columns(3)
                     for j, item in enumerate(items_guardados[:3]):
                         with [c1, c2, c3][j]:
                             st.image(item['foto'], width=60)
-                            st.caption(f"${item['precio']:,.0f}")
+                            p_v = item.get('precio_venta', 0)
+                            p_l = item.get('precio_lista', 0)
+                            
+                            if p_l > p_v:
+                                pct = int((1 - (p_v/p_l)) * 100)
+                                st.caption(f"~~${p_l:,.0f}~~")
+                                st.markdown(f"**${p_v:,.0f}** :red[{pct}% OFF]")
+                            else:
+                                st.markdown(f"**${p_v:,.0f}**")
                 st.markdown("---")
 
 # --- OTRAS TABS ---
-with tabs[3]: st.write("Historial de Aprobados recientes...") 
-with tabs[4]: st.write("Historial de Cancelados recientes...")
+with tabs[3]: st.write("Historial Aprobados...") 
+with tabs[4]: st.write("Historial Cancelados...")
