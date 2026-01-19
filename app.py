@@ -28,11 +28,10 @@ TAG_PENDIENTE = "#PENDIENTE_PAGO"
 TAG_APROBADO = "#APROBADO"
 
 # === 🛡️ CUPOS DE RESPALDO ===
-# Si la API devuelve 0 o NULL, el robot usa estos valores según la categoría
 CUPOS_POR_CATEGORIA = {
     1: 50000.0,
     2: 150000.0,
-    3: 300000.0,
+    3: 300000.0,  # Caso Luisa
     4: 500000.0,
     "DEFAULT": 100000.0
 }
@@ -167,10 +166,9 @@ def generar_recomendaciones(nombre_producto_comprado):
     return productos_finales, perfil_detectado
 
 # ==========================================
-# 📧 3. GESTOR DE CORREOS
+# 📧 3. GESTOR DE CORREOS (CONTENIDO RICO)
 # ==========================================
 
-# Genera HTML y Asunto (Para Preview y Envío)
 def generar_html_correo(nombre_cliente, escenario, datos_extra={}):
     NUMERO_WHATSAPP = "5491153748291" 
     id_visual = datos_extra.get('id_visual', 'S/N')
@@ -186,28 +184,60 @@ def generar_html_correo(nombre_cliente, escenario, datos_extra={}):
             for p in recomendados:
                 precio_fmt = f"${p['precio']:,.0f}" if p['precio'] > 0 else "Ver Precio"
                 filas += f"""<td style="width:33%;padding:10px;text-align:center;border:1px solid #f0f0f0;border-radius:8px;background:#fff;"><a href="{p['url']}" style="text-decoration:none;color:#333;display:block;"><img src="{p['foto']}" alt="{p['nombre']}" style="width:100%;max-width:120px;height:120px;object-fit:contain;margin-bottom:10px;"><p style="font-size:13px;margin:0 0 5px;height:36px;overflow:hidden;"><strong>{p['nombre']}</strong></p><p style="color:#28a745;font-weight:bold;">{precio_fmt}</p><div style="background:#007bff;color:white;padding:6px 10px;border-radius:4px;font-size:12px;display:inline-block;">VER OFERTA</div></a></td>"""
-            html_cross = f"""<div style="background-color:#f9f9f9;padding:20px;border-radius:10px;margin-top:30px;border:1px solid #eee;"><h3 style="text-align:center;color:#444;margin-top:0;">🔥 Recomendados ({perfil}) 🔥</h3><table width="100%" cellpadding="5" cellspacing="5" style="border-collapse:separate;border-spacing:10px;"><tr>{filas}</tr></table></div>"""
+            html_cross = f"""<div style="background-color:#f9f9f9;padding:20px;border-radius:10px;margin-top:30px;border:1px solid #eee;"><h3 style="text-align:center;color:#444;margin-top:0;">🔥 Recomendados ({perfil}) 🔥</h3><p style="text-align:center;font-size:13px;color:#777;">Completá tu experiencia con estos accesorios:</p><table width="100%" cellpadding="5" cellspacing="5" style="border-collapse:separate;border-spacing:10px;"><tr>{filas}</tr></table></div>"""
 
-    # === CUERPO ===
+    # === CUERPO TEXTO (AMENO Y EXPLICATIVO) ===
     cuerpo_txt = ""
     asunto = ""
     
     if escenario == 1: # RECHAZADO
         asunto = f"Actualización pedido #{id_visual}"
-        cuerpo_txt = f"<p>Hola <strong>{nombre_cliente}</strong>, tu pedido <strong>#{id_visual}</strong> no pudo ser financiado por falta de cupo. Reservamos tu pedido 24hs. Respondé para pagar con otro medio.</p>"
+        cuerpo_txt = f"""
+            <p>Hola <strong>{nombre_cliente}</strong>,</p>
+            <p>Recibimos tu pedido <strong>#{id_visual}</strong>. Al procesar la financiación, el sistema indica que no tenés cupo disponible actualmente en tu Cuenta Corriente.</p>
+            <p><strong>¡No pierdas tu compra!</strong> Reservamos tu pedido 24hs para que abones con transferencia o tarjeta.</p>
+            <p>Respondé este mail para solicitar el link de pago o CBU.</p>
+        """
     
     elif escenario == 2: # DIFERENCIA
         cupo = datos_extra.get('cupo', 0)
         dif = datos_extra.get('diferencia', 0)
-        link_ws = f"https://wa.me/{NUMERO_WHATSAPP}?text={urllib.parse.quote(f'Hola, envío diferencia pedido #{id_visual}')}"
+        texto_ws = f"Hola SSServicios, envío comprobante diferencia pedido #{id_visual}."
+        link_ws = f"https://wa.me/{NUMERO_WHATSAPP}?text={urllib.parse.quote(texto_ws)}"
         asunto = f"Finalizá tu pedido #{id_visual}"
-        cuerpo_txt = f"<p>Hola <strong>{nombre_cliente}</strong>, aprobamos parcialmente tu financiación (Cupo: <strong>${cupo:,.0f}</strong>).<br>Resta abonar: <strong>${dif:,.0f}</strong>.</p><p>Transferencia: BBVA | CBU: 0170272120000001018527<br><a href='{link_ws}'>ENVIAR COMPROBANTE</a></p>"
+        
+        cuerpo_txt = f"""
+            <p>Hola <strong>{nombre_cliente}</strong>,</p>
+            <p>¡Buenas noticias! Aprobamos parcialmente tu financiación.<br>
+            Tu cupo disponible es: <strong>${cupo:,.0f}</strong></p>
+            
+            <div style="background: #fff3cd; padding: 15px; border-left: 5px solid #ffc107; margin: 20px 0;">
+                <p style="margin:0; font-size: 14px; color: #856404;">Resta abonar una diferencia de:</p>
+                <p style="margin:5px 0 0; font-size: 20px; font-weight: bold; color: #333;">${dif:,.0f}</p>
+            </div>
+
+            <p><strong>Datos para Transferencia:</strong><br>
+            Banco BBVA<br>
+            CBU: 0170272120000001018527<br>
+            Alias: SSSERVICIOS.MP</p>
+            
+            <p style="text-align: center; margin-top: 25px;">
+                <a href="{link_ws}" style="background: #25D366; color: white; padding: 12px 25px; text-decoration: none; border-radius: 5px; font-weight: bold; font-size: 14px;">👉 ENVIAR COMPROBANTE POR WHATSAPP</a>
+            </p>
+        """
     
     elif escenario == 3: # APROBADO
         asunto = f"¡Aprobado! Pedido #{id_visual} ✅"
-        cuerpo_txt = f"<p>Hola <strong>{nombre_cliente}</strong>, confirmamos que la financiación de tu pedido <strong>#{id_visual}</strong> fue <strong>APROBADA</strong>.</p>"
+        cuerpo_txt = f"""
+            <p>Hola <strong>{nombre_cliente}</strong>,</p>
+            <p>Confirmamos que la financiación de tu pedido <strong>#{id_visual}</strong> fue <strong>APROBADA CORRECTAMENTE</strong>.</p>
+            <p>El importe se verá reflejado en tu próxima factura en <strong>3 cuotas sin interés</strong> (o según tu plan vigente).</p>
+            <p>Ya estamos preparando tu paquete. Te avisaremos cuando salga a despacho.</p>
+            <p>¡Gracias por elegirnos!</p>
+        """
 
-    html_final = f"""<div style="font-family:Helvetica,Arial;color:#333;line-height:1.6;max-width:600px;margin:auto;">{cuerpo_txt}{html_cross}<br><hr style="border:0;border-top:1px solid #eee"><small style="color:#999">SSServicios Team</small></div>"""
+    html_final = f"""<div style="font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; color: #333; line-height: 1.6; max-width: 600px; margin: auto; border: 1px solid #eee; padding: 20px; border-radius: 8px;">{cuerpo_txt}{html_cross}<br><hr style="border:0;border-top:1px solid #eee; margin: 30px 0;"><small style="color:#999">Atte,<br>Equipo SSServicios</small></div>"""
+    
     return asunto, html_final
 
 def enviar_notificacion(email_cliente, nombre_cliente, escenario, datos_extra={}):
@@ -286,15 +316,50 @@ def buscar_cliente_cascada(nombre_tn, dni_tn, nota_tn):
 def extraer_productos(pedido):
     return ", ".join([f"{i.get('name')} ({i.get('quantity')})" for i in pedido.get('products', [])])
 
-# --- APP ---
+# --- APP START ---
 st.set_page_config(page_title="Gestor SSServicios", page_icon="🤖", layout="wide")
 st.title("🤖 Gestor de Ventas Contrafactura")
 
+# === SIDEBAR (RESTAURADA) ===
+st.sidebar.header("🔎 Consulta Manual")
+id_manual = st.sidebar.text_input("ID Cliente:", placeholder="Ej: 7113")
+
+if st.sidebar.button("Consultar Cupo"):
+    if not id_manual: st.sidebar.warning("Ingresá un número.")
+    else:
+        with st.spinner("Buscando..."):
+            res_manual = consultar_api_aria_id(id_manual)
+            if res_manual and res_manual[0].get('cliente_id'):
+                cli_m = res_manual[0]
+                nom_m = f"{cli_m.get('cliente_nombre','')} {cli_m.get('cliente_apellido','')}"
+                
+                # Debug data
+                with st.sidebar.expander("Ver Datos Crudos"):
+                    st.json(cli_m)
+
+                # Lógica Cupo Sidebar
+                cupo_m = safe_float(cli_m.get('clienteScoringFinanciable'))
+                origen_m = "API"
+                if cupo_m == 0:
+                    cat_m = int(cli_m.get('cliente_categoria', 0) or 0)
+                    cupo_m = CUPOS_POR_CATEGORIA.get(cat_m, CUPOS_POR_CATEGORIA["DEFAULT"])
+                    origen_m = f"Respaldo Cat {cat_m}"
+                
+                meses_m = int(cli_m.get('cliente_meses_atraso', 0) or 0)
+                
+                st.sidebar.success(f"✅ {nom_m}")
+                st.sidebar.metric("Cupo Disponible", f"${cupo_m:,.0f}", help=origen_m)
+                
+                if meses_m > 0: st.sidebar.error(f"⛔ Mora: {meses_m} meses")
+                else: st.sidebar.info("✅ Al día")
+            else: st.sidebar.error("❌ Cliente no existe.")
+
 if st.sidebar.button("🔄 Actualizar Todo"): st.rerun()
+# ============================
 
 tab_nuevos, tab_pendientes, tab_aprobados, tab_cancelados = st.tabs(["📥 NUEVOS", "⏳ PENDIENTES", "✅ APROBADOS", "🚫 CANCELADOS"])
 
-with st.spinner('Sincronizando...'):
+with st.spinner('Sincronizando Tiendanube...'):
     pedidos_todos = obtener_pedidos("open") + obtener_pedidos("closed")
 
 # --- PESTAÑA: NUEVOS ---
@@ -306,7 +371,7 @@ with tab_nuevos:
         id_real = p['id']
         id_visual = p.get('number', id_real)
         nom = p['customer']['name']
-        mail = p['customer'].get('email')
+        mail = p['customer']['email']
         total = float(p['total'])
         nota = p.get('owner_note') or ""
         prod_prin = p['products'][0]['name'] if p['products'] else ""
@@ -353,7 +418,7 @@ with tab_nuevos:
                             'id_visual': id_visual, 'nombre_producto_base': prod_prin
                         })
                         st.markdown(f"**Asunto:** {asunto_prev}")
-                        components.html(html_prev, height=400, scrolling=True)
+                        components.html(html_prev, height=450, scrolling=True)
 
                     # BOTONES DE ACCIÓN
                     if escenario_calc == 1:
