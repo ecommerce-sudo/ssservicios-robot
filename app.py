@@ -71,16 +71,16 @@ PERFILES_INTERES = {
 # 🔌 2. FUNCIONES DE CONEXIÓN (API)
 # ==========================================
 
-# --- NUEVA FUNCIÓN DE SEGURIDAD (CORRECCIÓN) ---
 def safe_float(value):
     """Convierte valores a float de forma segura, evitando errores con None."""
     try:
         if value is None or value == "":
             return 0.0
-        return float(value)
+        # Limpieza básica de moneda si viene con símbolos
+        clean_val = str(value).replace("$", "").replace(" ", "").replace(",", ".")
+        return float(clean_val)
     except (ValueError, TypeError):
         return 0.0
-# -----------------------------------------------
 
 def solo_numeros(texto):
     if texto is None: return ""
@@ -125,25 +125,21 @@ def obtener_pedidos(estado="open"):
 def obtener_info_desde_item(item_dict):
     """
     Toma un diccionario {link, foto} y completa el precio y nombre desde TN.
-    Si tiene foto manual, usa esa. Si no, la busca.
     """
     link_producto = item_dict.get('link', '#')
     foto_manual = item_dict.get('foto', '')
     
-    # Valores por defecto
     resultado = {
         'nombre': "Producto Recomendado",
         'precio': 0,
-        'foto': foto_manual if foto_manual else "https://via.placeholder.com/150?text=Ver+Web", # Placeholder simple
+        'foto': foto_manual if foto_manual else "https://via.placeholder.com/150?text=Ver+Web",
         'url': link_producto
     }
 
     try:
-        # Extraer el 'handle' del link
         slug = link_producto.strip("/").split("/")[-1]
         nombre_busqueda = slug.replace("-", " ") 
         
-        # Buscar en API TN para sacar precio y nombre real
         url = f"https://api.tiendanube.com/v1/{TN_ID}/products"
         params = {'q': nombre_busqueda, 'per_page': 1}
         headers = {'Authentication': f'bearer {TN_TOKEN}', 'User-Agent': TN_USER_AGENT}
@@ -151,16 +147,12 @@ def obtener_info_desde_item(item_dict):
         res = requests.get(url, headers=headers, params=params)
         if res.status_code == 200 and len(res.json()) > 0:
             p = res.json()[0]
-            
-            # Usamos foto de la API solo si no hay foto manual
             img_api = ""
             if p.get('images'): img_api = p['images'][0]['src']
-            
             resultado['nombre'] = p['name']['es']
             resultado['precio'] = float(p.get('price', 0)) if p.get('price') else 0
             if not foto_manual:
                 resultado['foto'] = img_api
-
     except Exception as e:
         print(f"Error buscando producto: {e}")
     
@@ -168,9 +160,8 @@ def obtener_info_desde_item(item_dict):
 
 def generar_recomendaciones(nombre_producto_comprado):
     nombre_lower = str(nombre_producto_comprado).lower()
-    perfil_detectado = "HOGAR" # Default
+    perfil_detectado = "HOGAR" 
     
-    # 1. Detección de Perfil
     for perfil, datos in PERFILES_INTERES.items():
         for kw in datos['keywords']:
             if kw in nombre_lower:
@@ -178,10 +169,7 @@ def generar_recomendaciones(nombre_producto_comprado):
                 break
         if perfil_detectado != "HOGAR": break
     
-    # 2. Obtener Items del perfil
     items_objetivo = PERFILES_INTERES[perfil_detectado]['items']
-    
-    # 3. Enriquecer info
     productos_finales = []
     for item in items_objetivo:
         info = obtener_info_desde_item(item)
@@ -247,7 +235,6 @@ def enviar_notificacion(email_cliente, nombre_cliente, escenario, datos_extra={}
     NUMERO_WHATSAPP = "5491153748291" 
     id_visual = datos_extra.get('id_visual', 'S/N')
     
-    # === GENERADOR DE CROSS SELLING ===
     html_cross = ""
     nombre_prod_base = datos_extra.get('nombre_producto_base', '')
     
@@ -257,8 +244,6 @@ def enviar_notificacion(email_cliente, nombre_cliente, escenario, datos_extra={}
             filas = ""
             for p in recomendados:
                 precio_fmt = f"${p['precio']:,.0f}" if p['precio'] > 0 else "Ver Precio"
-                
-                # Diseño de tarjeta de producto
                 filas += f"""
                 <td style="width: 33%; padding: 10px; text-align: center; border: 1px solid #f0f0f0; border-radius: 8px; background: #fff;">
                     <a href="{p['url']}" style="text-decoration: none; color: #333; display: block;">
@@ -279,7 +264,6 @@ def enviar_notificacion(email_cliente, nombre_cliente, escenario, datos_extra={}
                 </table>
             </div>
             """
-    # ==================================
 
     msg = MIMEMultipart()
     msg['From'] = f"SSServicios <{SMTP_USER}>"
@@ -398,9 +382,11 @@ if st.sidebar.button("Consultar Cupo"):
             if res_manual and res_manual[0].get('cliente_id'):
                 cli_m = res_manual[0]
                 nom_m = f"{cli_m.get('cliente_nombre','')} {cli_m.get('cliente_apellido','')}"
-                # --- FIX APLICADO AQUÍ ---
+                
+                # --- AQUI TAMBIEN MOSTRAMOS TODO POR SI ACASO ---
+                st.sidebar.json(cli_m) 
+                
                 cupo_m = safe_float(cli_m.get('clienteScoringFinanciable'))
-                # -------------------------
                 meses_m = int(cli_m.get('cliente_meses_atraso', 0) or 0)
                 st.sidebar.success(f"✅ **{nom_m}**")
                 st.sidebar.metric("Cupo Disponible", f"${cupo_m:,.0f}")
@@ -450,11 +436,17 @@ with tab_nuevos:
                             st.error(msg)
                             st.warning("Busca ID Manual 👈")
                         else:
-                            # --- FIX CRÍTICO APLICADO AQUÍ ---
+                            # ===============================================
+                            # 🕵️‍♂️ MODO DEBUG PARA ENCONTRAR EL CUPO
+                            # ===============================================
+                            with st.expander("🕵️‍♂️ VER DATOS CRUDOS DE ARIA (DEBUG)"):
+                                st.info("Buscá el campo que tenga el valor del cupo y decime el nombre.")
+                                st.json(cli)
+                            # ===============================================
+
                             cupo = safe_float(cli.get('clienteScoringFinanciable'))
-                            # ---------------------------------
-                            
                             meses = int(cli.get('cliente_meses_atraso', 0) or 0)
+                            
                             st.success(f"{msg} (Cupo: ${cupo:,.0f})")
                             
                             if meses > 0:
