@@ -22,6 +22,7 @@ except Exception as e:
 # Configuración fija
 TN_USER_AGENT = "RobotWeb (24705)"
 ARIA_URL_BASE = "https://api.anatod.ar/api"
+NUMERO_WHATSAPP = "5492966840059" # 👈 TU NÚMERO ACTUALIZADO
 
 # ETIQUETAS
 TAG_PENDIENTE = "#PENDIENTE_PAGO"
@@ -31,7 +32,7 @@ TAG_APROBADO = "#APROBADO"
 CUPOS_POR_CATEGORIA = {
     1: 50000.0,
     2: 150000.0,
-    3: 300000.0,  # Caso Luisa
+    3: 300000.0,
     4: 500000.0,
     "DEFAULT": 100000.0
 }
@@ -46,33 +47,33 @@ PERFILES_INTERES = {
     "GAMING": {
         "keywords": ["gamer", "juego", "playstation", "ps4", "ps5", "joystick", "rtx", "teclado", "mecanico", "redragon", "pc", "mouse"],
         "items": [
-            {"link": "https://ssstore.com.ar/productos/mouse-cerberus-redragon-m703/", "foto": ""},
-            {"link": "https://ssstore.com.ar/productos/auricular-vincha-cronus-redragon-h211w-rgb/", "foto": ""},
-            {"link": "https://ssstore.com.ar/productos/teclado-aditya-redragon-k513-rgb-sin-n/", "foto": ""}
+            {"link": "https://ssstore.com.ar/productos/mouse-cerberus-redragon-m703/", "foto": "https://d3ugyf2ht6aenh.cloudfront.net/stores/001/139/265/products/mouse-cerberus-redragon-m703-1-1b1f0b0f0b0f0b0f0b16269666666666-640-0.jpg"},
+            {"link": "https://ssstore.com.ar/productos/auricular-vincha-cronus-redragon-h211w-rgb/", "foto": "https://d3ugyf2ht6aenh.cloudfront.net/stores/001/139/265/products/h211-1-80c10a0a0a0a0a0a0a16269666666666-640-0.jpg"},
+            {"link": "https://ssstore.com.ar/productos/teclado-aditya-redragon-k513-rgb-sin-n/", "foto": "https://d3ugyf2ht6aenh.cloudfront.net/stores/001/139/265/products/k513-1-90d10b0b0b0b0b0b0b16269666666666-640-0.jpg"}
         ]
     },
     "CONECTIVIDAD": {
         "keywords": ["starlink", "router", "antena", "wifi", "ubiquiti", "internet", "mesh", "cable", "red"],
         "items": [
-            {"link": "https://ssstore.com.ar/productos/router-wifi-huaweii-ax2s-ws700v2/", "foto": ""},
-            {"link": "https://ssstore.com.ar/productos/cable-starlink-mini-usb-c-a-fuente-portatil-usa-tu-antena-con-power-bank-n9thq/", "foto": ""},
-            {"link": "https://ssstore.com.ar/productos/router-mesh-tp-link-deco-xe75-wifi-6e-ax5400-blanco-negro-1u/", "foto": ""}
+            {"link": "https://ssstore.com.ar/productos/router-wifi-huaweii-ax2s-ws700v2/", "foto": "https://acdn.mitiendanube.com/stores/001/139/265/products/router-huawei-ax2-1-24810c0c0c0c0c0c0c16869666666666-640-0.png"},
+            {"link": "https://ssstore.com.ar/productos/cable-starlink-mini-usb-c-a-fuente-portatil-usa-tu-antena-con-power-bank-n9thq/", "foto": "https://acdn.mitiendanube.com/stores/001/139/265/products/cable-starlink-mini-1-35910d0d0d0d0d0d0d17269666666666-640-0.jpg"},
+            {"link": "https://ssstore.com.ar/productos/router-mesh-tp-link-deco-xe75-wifi-6e-ax5400-blanco-negro-1u/", "foto": "https://acdn.mitiendanube.com/stores/001/139/265/products/deco-xe75-1-46010e0e0e0e0e0e0e17069666666666-640-0.jpg"}
         ]
     },
     "MOVILIDAD": {
         "keywords": ["samsung", "iphone", "motorola", "celular", "xiaomi", "smartphone", "apple", "android"],
         "items": [
-            {"link": "https://ssstore.com.ar/productos/cable-foxbox-pixel-100w-con-display-lcd-usb-c-a-usb-c-egdem/", "foto": ""},
-            {"link": "https://ssstore.com.ar/productos/cargador-de-auto-foxbox-way-qc-3-0-30w-carga-rapida-qualcomm-rfgoa/", "foto": ""},
-            {"link": "https://ssstore.com.ar/productos/cargador-foxbox-mega-30w-gan-negro-para-iphone-cable-lightning-j8nie/", "foto": ""}
+            {"link": "https://ssstore.com.ar/productos/cable-foxbox-pixel-100w-con-display-lcd-usb-c-a-usb-c-egdem/", "foto": "https://acdn.mitiendanube.com/stores/001/139/265/products/cable-foxbox-pixel-1-57110f0f0f0f0f0f0f17169666666666-640-0.jpg"},
+            {"link": "https://ssstore.com.ar/productos/cargador-de-auto-foxbox-way-qc-3-0-30w-carga-rapida-qualcomm-rfgoa/", "foto": "https://acdn.mitiendanube.com/stores/001/139/265/products/cargador-auto-foxbox-1-68211010101010101017169666666666-640-0.jpg"},
+            {"link": "https://ssstore.com.ar/productos/cargador-foxbox-mega-30w-gan-negro-para-iphone-cable-lightning-j8nie/", "foto": "https://acdn.mitiendanube.com/stores/001/139/265/products/cargador-foxbox-mega-1-79311111111111111117169666666666-640-0.jpg"}
         ]
     },
     "HOGAR": {
         "keywords": ["tv", "smart", "televisor", "google", "android tv", "4k", "led", "ups", "casa"],
         "items": [
-            {"link": "https://ssstore.com.ar/productos/auriculares-inalambricos-foxbox-clarity-negro-control-tactil-y-asistente-de-voz-qi0kh/", "foto": ""},
-            {"link": "https://ssstore.com.ar/productos/ups-marsriva-kp2-ultra-16000mah-5v-12v-bivolt/", "foto": ""},
-            {"link": "https://ssstore.com.ar/productos/freidora-de-aire-foxbox-aeris-6l-digital-1500w-sin-aceite-yufou/", "foto": ""}
+            {"link": "https://ssstore.com.ar/productos/auriculares-inalambricos-foxbox-clarity-negro-control-tactil-y-asistente-de-voz-qi0kh/", "foto": "https://d3ugyf2ht6aenh.cloudfront.net/stores/001/139/265/products/auricular-foxbox-clarity-1-80411212121212121217169666666666-640-0.jpg"},
+            {"link": "https://ssstore.com.ar/productos/ups-marsriva-kp2-ultra-16000mah-5v-12v-bivolt/", "foto": "https://d3ugyf2ht6aenh.cloudfront.net/stores/001/139/265/products/ups-marsriva-kp2-1-91511311311311311317169666666666-640-0.jpg"},
+            {"link": "https://ssstore.com.ar/productos/freidora-de-aire-foxbox-aeris-6l-digital-1500w-sin-aceite-yufou/", "foto": "https://d3ugyf2ht6aenh.cloudfront.net/stores/001/139/265/products/freidora-foxbox-aeris-1-02611411411411411417169666666666-640-0.jpg"}
         ]
     }
 }
@@ -166,12 +167,15 @@ def generar_recomendaciones(nombre_producto_comprado):
     return productos_finales, perfil_detectado
 
 # ==========================================
-# 📧 3. GESTOR DE CORREOS (CONTENIDO RICO)
+# 📧 3. GESTOR DE CORREOS (DEFINITIVO)
 # ==========================================
 
 def generar_html_correo(nombre_cliente, escenario, datos_extra={}):
-    NUMERO_WHATSAPP = "5491153748291" 
     id_visual = datos_extra.get('id_visual', 'S/N')
+    
+    # Links de WhatsApp
+    link_ws_general = f"https://wa.me/{NUMERO_WHATSAPP}"
+    link_ws_comprobante = f"https://wa.me/{NUMERO_WHATSAPP}?text={urllib.parse.quote(f'Hola, envío diferencia pedido #{id_visual}')}"
     
     # === CROSS SELLING ===
     html_cross = ""
@@ -186,57 +190,81 @@ def generar_html_correo(nombre_cliente, escenario, datos_extra={}):
                 filas += f"""<td style="width:33%;padding:10px;text-align:center;border:1px solid #f0f0f0;border-radius:8px;background:#fff;"><a href="{p['url']}" style="text-decoration:none;color:#333;display:block;"><img src="{p['foto']}" alt="{p['nombre']}" style="width:100%;max-width:120px;height:120px;object-fit:contain;margin-bottom:10px;"><p style="font-size:13px;margin:0 0 5px;height:36px;overflow:hidden;"><strong>{p['nombre']}</strong></p><p style="color:#28a745;font-weight:bold;">{precio_fmt}</p><div style="background:#007bff;color:white;padding:6px 10px;border-radius:4px;font-size:12px;display:inline-block;">VER OFERTA</div></a></td>"""
             html_cross = f"""<div style="background-color:#f9f9f9;padding:20px;border-radius:10px;margin-top:30px;border:1px solid #eee;"><h3 style="text-align:center;color:#444;margin-top:0;">🔥 Recomendados ({perfil}) 🔥</h3><p style="text-align:center;font-size:13px;color:#777;">Completá tu experiencia con estos accesorios:</p><table width="100%" cellpadding="5" cellspacing="5" style="border-collapse:separate;border-spacing:10px;"><tr>{filas}</tr></table></div>"""
 
-    # === CUERPO TEXTO (AMENO Y EXPLICATIVO) ===
+    # === PIE DE PÁGINA (CONSULTAS) ===
+    html_footer_consultas = f"""
+        <p style="border-top: 1px solid #eee; padding-top: 20px; margin-top: 30px; font-size: 13px; color: #777; text-align: center;">
+            ¿Tenés alguna duda? Estamos para ayudarte.<br>
+            <a href="{link_ws_general}" style="color: #007bff; text-decoration: none; font-weight: bold;">💬 Escribinos por WhatsApp</a>
+        </p>
+    """
+
+    # === CUERPO DE MAILS (TEXTOS APROBADOS) ===
     cuerpo_txt = ""
     asunto = ""
     
-    if escenario == 1: # RECHAZADO
-        asunto = f"Actualización pedido #{id_visual}"
+    # CASO 1: RECHAZO (CANCELACIÓN)
+    if escenario == 1: 
+        asunto = f"Información sobre tu pedido #{id_visual}"
         cuerpo_txt = f"""
             <p>Hola <strong>{nombre_cliente}</strong>,</p>
-            <p>Recibimos tu pedido <strong>#{id_visual}</strong>. Al procesar la financiación, el sistema indica que no tenés cupo disponible actualmente en tu Cuenta Corriente.</p>
-            <p><strong>¡No pierdas tu compra!</strong> Reservamos tu pedido 24hs para que abones con transferencia o tarjeta.</p>
-            <p>Respondé este mail para solicitar el link de pago o CBU.</p>
+            <p>Te contactamos para informarte sobre el pedido <strong>#{id_visual}</strong> que realizaste en nuestra tienda.</p>
+            <p>Al procesar la solicitud, el sistema de validación administrativa no ha podido aprobar la financiación solicitada para esta operación. Por este motivo, <strong>el pedido ha sido cancelado en el sistema.</strong></p>
+            
+            <p><strong>¡Pero podés tener tus productos igual!</strong> 🛒<br>
+            Te invitamos a ingresar nuevamente a nuestra tienda online y realizar la compra utilizando los medios de pago directos habilitados:</p>
+            <ul>
+                <li>Tarjeta de Crédito o Débito.</li>
+                <li>Transferencia Bancaria.</li>
+            </ul>
+            <p>Esperamos tu nueva orden para prepararla cuanto antes.</p>
+            <p>¡Saludos!<br><strong>Equipo SSServicios</strong></p>
         """
     
-    elif escenario == 2: # DIFERENCIA
+    # CASO 2: DIFERENCIA (ENRIQUECIDO + WS)
+    elif escenario == 2: 
         cupo = datos_extra.get('cupo', 0)
         dif = datos_extra.get('diferencia', 0)
-        texto_ws = f"Hola SSServicios, envío comprobante diferencia pedido #{id_visual}."
-        link_ws = f"https://wa.me/{NUMERO_WHATSAPP}?text={urllib.parse.quote(texto_ws)}"
-        asunto = f"Finalizá tu pedido #{id_visual}"
+        asunto = f"Acción requerida: Finalizá tu pedido #{id_visual}"
         
         cuerpo_txt = f"""
             <p>Hola <strong>{nombre_cliente}</strong>,</p>
-            <p>¡Buenas noticias! Aprobamos parcialmente tu financiación.<br>
-            Tu cupo disponible es: <strong>${cupo:,.0f}</strong></p>
+            <p><strong>¡Buenas noticias!</strong> Tu solicitud de financiación fue aprobada parcialmente.</p>
+            <p>Te contamos que tu límite disponible cubre una gran parte del total, por lo que <strong>solo necesitás abonar la diferencia para que podamos despachar tu pedido.</strong></p>
             
-            <div style="background: #fff3cd; padding: 15px; border-left: 5px solid #ffc107; margin: 20px 0;">
-                <p style="margin:0; font-size: 14px; color: #856404;">Resta abonar una diferencia de:</p>
-                <p style="margin:5px 0 0; font-size: 20px; font-weight: bold; color: #333;">${dif:,.0f}</p>
+            <div style="background: #f0f8ff; padding: 20px; border-radius: 8px; border-left: 5px solid #007bff; margin: 20px 0;">
+                <h3 style="margin-top:0; color: #0056b3;">📉 Resumen de Financiación:</h3>
+                <p style="margin:5px 0;">✅ Cubierto por cupo: <strong>${cupo:,.0f}</strong></p>
+                <p style="margin:5px 0; font-size: 18px; color: #d9534f;">👉 <strong>Resta abonar: ${dif:,.0f}</strong></p>
             </div>
 
-            <p><strong>Datos para Transferencia:</strong><br>
-            Banco BBVA<br>
+            <p><strong>⏳ ¿Cómo seguimos?</strong><br>
+            Para liberar el pedido, transferí la diferencia a la siguiente cuenta:</p>
+            
+            <p style="background:#f9f9f9; padding:15px; border:1px dashed #ccc;">
+            <strong>Banco BBVA</strong><br>
             CBU: 0170272120000001018527<br>
-            Alias: SSSERVICIOS.MP</p>
+            Alias: SSSERVICIOS.MP
+            </p>
+            
+            <p>Una vez hecha, envianos el comprobante tocando el botón de abajo y lo despachamos:</p>
             
             <p style="text-align: center; margin-top: 25px;">
-                <a href="{link_ws}" style="background: #25D366; color: white; padding: 12px 25px; text-decoration: none; border-radius: 5px; font-weight: bold; font-size: 14px;">👉 ENVIAR COMPROBANTE POR WHATSAPP</a>
+                <a href="{link_ws_comprobante}" style="background: #25D366; color: white; padding: 12px 25px; text-decoration: none; border-radius: 5px; font-weight: bold; font-size: 14px;">👉 ENVIAR COMPROBANTE POR WHATSAPP</a>
             </p>
         """
     
-    elif escenario == 3: # APROBADO
-        asunto = f"¡Aprobado! Pedido #{id_visual} ✅"
+    # CASO 3: APROBADO (3 CUOTAS SIN INTERÉS)
+    elif escenario == 3: 
+        asunto = f"¡Aprobado! Tu pedido #{id_visual} está en camino ✅"
         cuerpo_txt = f"""
             <p>Hola <strong>{nombre_cliente}</strong>,</p>
             <p>Confirmamos que la financiación de tu pedido <strong>#{id_visual}</strong> fue <strong>APROBADA CORRECTAMENTE</strong>.</p>
-            <p>El importe se verá reflejado en tu próxima factura en <strong>3 cuotas sin interés</strong> (o según tu plan vigente).</p>
-            <p>Ya estamos preparando tu paquete. Te avisaremos cuando salga a despacho.</p>
+            <p>El importe total se verá reflejado en tu próxima factura en <strong>3 cuotas sin interés</strong>.</p>
+            <p>Ya estamos preparando tu paquete. Te avisaremos apenas salga a despacho.</p>
             <p>¡Gracias por elegirnos!</p>
         """
 
-    html_final = f"""<div style="font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; color: #333; line-height: 1.6; max-width: 600px; margin: auto; border: 1px solid #eee; padding: 20px; border-radius: 8px;">{cuerpo_txt}{html_cross}<br><hr style="border:0;border-top:1px solid #eee; margin: 30px 0;"><small style="color:#999">Atte,<br>Equipo SSServicios</small></div>"""
+    html_final = f"""<div style="font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; color: #333; line-height: 1.6; max-width: 600px; margin: auto; border: 1px solid #eee; padding: 20px; border-radius: 8px;">{cuerpo_txt}{html_cross}{html_footer_consultas}</div>"""
     
     return asunto, html_final
 
@@ -320,7 +348,7 @@ def extraer_productos(pedido):
 st.set_page_config(page_title="Gestor SSServicios", page_icon="🤖", layout="wide")
 st.title("🤖 Gestor de Ventas Contrafactura")
 
-# === SIDEBAR (RESTAURADA) ===
+# === SIDEBAR ===
 st.sidebar.header("🔎 Consulta Manual")
 id_manual = st.sidebar.text_input("ID Cliente:", placeholder="Ej: 7113")
 
@@ -333,11 +361,9 @@ if st.sidebar.button("Consultar Cupo"):
                 cli_m = res_manual[0]
                 nom_m = f"{cli_m.get('cliente_nombre','')} {cli_m.get('cliente_apellido','')}"
                 
-                # Debug data
                 with st.sidebar.expander("Ver Datos Crudos"):
                     st.json(cli_m)
 
-                # Lógica Cupo Sidebar
                 cupo_m = safe_float(cli_m.get('clienteScoringFinanciable'))
                 origen_m = "API"
                 if cupo_m == 0:
@@ -355,7 +381,6 @@ if st.sidebar.button("Consultar Cupo"):
             else: st.sidebar.error("❌ Cliente no existe.")
 
 if st.sidebar.button("🔄 Actualizar Todo"): st.rerun()
-# ============================
 
 tab_nuevos, tab_pendientes, tab_aprobados, tab_cancelados = st.tabs(["📥 NUEVOS", "⏳ PENDIENTES", "✅ APROBADOS", "🚫 CANCELADOS"])
 
@@ -387,7 +412,6 @@ with tab_nuevos:
                     st.error(msg)
                     with st.expander("Ver Datos Crudos"): st.write(cli)
                 else:
-                    # LÓGICA DE CUPO (RESPALDO + API)
                     cupo = safe_float(cli.get('clienteScoringFinanciable'))
                     origen = "API"
                     if cupo == 0:
@@ -403,7 +427,6 @@ with tab_nuevos:
                     c2.metric("Pedido", f"${total:,.0f}")
                     c3.metric("Mora", f"{meses}m")
 
-                    # DETERMINAR ESCENARIO
                     escenario_calc = 0
                     if meses > 0: escenario_calc = 1
                     elif total <= cupo: escenario_calc = 3
@@ -411,21 +434,21 @@ with tab_nuevos:
                     
                     dif_calc = total - cupo
 
-                    # PREVIEW EMAIL
                     with st.expander("👁️ Ver Preview del Email"):
                         asunto_prev, html_prev = generar_html_correo(nom, escenario_calc, {
                             'cupo': cupo, 'diferencia': dif_calc, 
                             'id_visual': id_visual, 'nombre_producto_base': prod_prin
                         })
                         st.markdown(f"**Asunto:** {asunto_prev}")
-                        components.html(html_prev, height=450, scrolling=True)
+                        components.html(html_prev, height=500, scrolling=True)
 
-                    # BOTONES DE ACCIÓN
                     if escenario_calc == 1:
                         st.error("⛔ Cliente con MORA.")
-                        if st.button("📧 Rechazar", key=f"btn_{id_real}"):
+                        if st.button("📧 Rechazar (Cancelar)", key=f"btn_{id_real}"):
+                            cancelar_orden_tn(id_real) # ACCIÓN CANCELAR
                             enviar_notificacion(mail, nom, 1, {'id_visual': id_visual, 'nombre_producto_base': prod_prin})
-                            actualizar_etiqueta(id_real, nota, TAG_PENDIENTE)
+                            st.toast("Pedido Cancelado y Mail enviado.")
+                            time.sleep(2)
                             st.rerun()
                     
                     elif escenario_calc == 3:
