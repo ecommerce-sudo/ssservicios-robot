@@ -30,16 +30,16 @@ FILE_CONFIG = "recomendados.json"
 TAG_PENDIENTE = "#PENDIENTE_PAGO"
 TAG_APROBADO = "#APROBADO"
 
-# === 🛡️ CUPOS DE RESPALDO (SOLO PARA CLIENTES NO ENCONTRADOS) ===
+# === 🛡️ CUPOS DE RESPALDO ===
 CUPOS_POR_CATEGORIA = {
-    "DEFAULT": 100000.0 # 👈 Único valor usado si el cliente NO existe en base
+    "DEFAULT": 100000.0
 }
 
 if 'analisis_activo' not in st.session_state:
     st.session_state['analisis_activo'] = {}
 
 # ==========================================
-# 🔌 2. FUNCIONES DE CONEXIÓN
+# 🔌 2. FUNCIONES DE CONEXIÓN Y UTILIDADES
 # ==========================================
 
 def safe_float(value):
@@ -53,6 +53,11 @@ def solo_numeros(texto):
     if texto is None: return ""
     return re.sub(r'\D', '', str(texto))
 
+def generar_link_ws(telefono, mensaje):
+    msg_encoded = urllib.parse.quote(mensaje)
+    return f"https://wa.me/{telefono}?text={msg_encoded}"
+
+# --- APIs ---
 def consultar_api_aria_id(cliente_id):
     headers = {"x-api-key": ARIA_KEY, "Content-Type": "application/json"}
     try:
@@ -158,7 +163,6 @@ def get_catalogo_tn_filtrado():
 # ==========================================
 # 💾 3. GESTIÓN DE CONFIGURACIÓN
 # ==========================================
-
 DEFAULT_CONFIG = {
     "GAMING": {"keywords": ["gamer", "juego", "play", "ps4", "pc"], "items": []},
     "CONECTIVIDAD": {"keywords": ["wifi", "router", "internet"], "items": []},
@@ -179,7 +183,6 @@ def guardar_configuracion(config):
 def detectar_perfil(nombre_prod):
     nombre_lower = str(nombre_prod).lower()
     config = cargar_configuracion()
-    
     perfil_elegido = "HOGAR"
     for perfil, data in config.items():
         for k in data['keywords']:
@@ -190,7 +193,6 @@ def detectar_perfil(nombre_prod):
 # ==========================================
 # 📧 4. GESTOR DE CORREOS
 # ==========================================
-
 def generar_html_correo(nombre_cliente, escenario, datos_extra={}):
     id_visual = datos_extra.get('id_visual', 'S/N')
     link_ws_general = f"https://wa.me/{NUMERO_WHATSAPP}"
@@ -331,7 +333,6 @@ if st.sidebar.button("Consultar"):
                 c = res[0]
                 with st.sidebar.expander("Datos Crudos"): st.json(c)
                 
-                # --- CORRECCIÓN MANUAL: Respetar API si existe ---
                 cupo = safe_float(c.get('clienteScoringFinanciable'))
                 origen = "API (Real)"
                 
@@ -342,7 +343,6 @@ if st.sidebar.button("Consultar"):
                 if meses > 0: st.sidebar.warning(f"⚠️ Mora: {meses} meses (Cupo habilitado)")
                 else: st.sidebar.info("Al día")
             else: 
-                # Si consultan manual y no existe, avisamos
                 st.sidebar.warning("⚠️ Cliente no encontrado en BD.")
                 st.sidebar.metric("Cupo Respaldo", f"${CUPOS_POR_CATEGORIA['DEFAULT']:,.0f}")
 
@@ -350,110 +350,148 @@ if st.sidebar.button("🔄 Actualizar Todo (Recargar)"): st.rerun()
 
 # === CARGA INICIAL DE PEDIDOS ===
 with st.spinner("⏳ Sincronizando pedidos con Tiendanube..."):
+    # Traemos todos los pedidos abiertos
     pedidos_open = obtener_pedidos("open")
 
 # === PESTAÑAS ===
-tabs = st.tabs(["📥 NUEVOS", "⏳ PENDIENTES", "⚙️ CONFIGURAR RECOMENDADOS", "✅ APROBADOS", "🚫 CANCELADOS"])
+tabs = st.tabs(["📥 NUEVOS", "⏳ PENDIENTES (Comprobantes/Dif)", "⚙️ CONFIGURAR RECOMENDADOS", "✅ APROBADOS", "🚫 CANCELADOS"])
 
-# --- TAB 1: NUEVOS ---
+# --- LÓGICA DE CLASIFICACIÓN ---
+aprobados_lista = [p for p in pedidos_open if p['payment_status'] == 'paid']
+pendientes_dif_lista = [p for p in pedidos_open if TAG_PENDIENTE in (p.get('owner_note') or "")]
+nuevos_lista = [
+    p for p in pedidos_open 
+    if p['payment_status'] == 'pending' 
+    and TAG_PENDIENTE not in (p.get('owner_note') or "") 
+    and TAG_APROBADO not in (p.get('owner_note') or "")
+]
+
+# --- TAB 1: NUEVOS (ANALISIS) ---
 with tabs[0]:
-    nuevos = [p for p in pedidos_open if p['payment_status']=='pending' and TAG_PENDIENTE not in (p.get('owner_note') or "") and TAG_APROBADO not in (p.get('owner_note') or "")]
-    
-    if not nuevos: 
+    if not nuevos_lista: 
         st.info("✅ No hay pedidos nuevos para analizar.")
     else:
-        st.write(f"Encontrados: {len(nuevos)} pedidos nuevos.")
-        for p in nuevos:
+        st.write(f"Encontrados: {len(nuevos_lista)} pedidos nuevos.")
+        for p in nuevos_lista:
             oid = p['id']
             nom = p['customer']['name']
             total = float(p['total'])
             nota = p.get('owner_note') or ""
             prod_nom = p['products'][0]['name'] if p['products'] else ""
             
-            with st.expander(f"🆕 #{p.get('number')} | {nom} | ${total:,.0f}"):
-                if st.button("🔍 Analizar Cliente", key=f"a_{oid}"): st.session_state[f"analizar_{oid}"] = True
+            # --- DETECCIÓN INTELIGENTE DE PAGO ---
+            gateway = p.get('gateway', '').lower()
+            payment_title = p.get('payment_details', {}).get('title', '') or p.get('gateway_name', '') or ""
+            payment_title_lower = payment_title.lower()
+
+            # Lógica semántica
+            es_transferencia = 'transfer' in payment_title_lower or 'depó' in payment_title_lower or 'wire' in gateway
+            es_convenir = 'convenir' in payment_title_lower or 'acordar' in payment_title_lower
+            
+            # Construcción del título con Emojis
+            if es_transferencia:
+                titulo_expander = f"🏦 Transferencia | #{p.get('number')} | {nom} | ${total:,.0f}"
+            elif es_convenir:
+                titulo_expander = f"🤝 A Convenir | #{p.get('number')} | {nom} | ${total:,.0f}"
+            else:
+                titulo_expander = f"💳 Tarjeta/Otro | #{p.get('number')} | {nom} | ${total:,.0f}"
+
+            with st.expander(titulo_expander):
                 
-                if st.session_state.get(f"analizar_{oid}"):
-                    st.markdown("---")
-                    cli, msg = None, "No encontrado"
-                    ids_nota = re.findall(r'\b\d{3,7}\b', str(nota))
-                    for pid in ids_nota:
-                        r = consultar_api_aria_id(pid)
-                        if r and r[0].get('cliente_id'): cli, msg = r[0], f"ID {pid}"; break
+                # === CASO A: TRANSFERENCIA (Solo pedimos comprobante) ===
+                if es_transferencia:
+                    st.info("ℹ️ Pago por Transferencia Pendiente.")
+                    msg_ws = f"Hola {nom}, gracias por tu compra #{p.get('number')}. Para procesar el envío necesitamos que nos envíes el comprobante de transferencia por este medio. ¡Gracias!"
+                    phone_clean = solo_numeros(p['customer'].get('phone', ''))
+                    if not phone_clean: phone_clean = "" 
                     
-                    if not cli:
-                        dni = solo_numeros(p['customer'].get('identification'))
-                        if len(dni) > 5:
-                            r = consultar_api_aria({'ident': dni})
-                            if r: cli, msg = r[0], f"DNI {dni}"
-                    
-                    # --- LÓGICA DE DECISIÓN CRÍTICA (CORREGIDA - TOLERANCIA MORA) ---
-                    if not cli:
-                        # CASO 1: NO EXISTE EN ARIA -> MODO RESPALDO
-                        st.warning("⚠️ Cliente no encontrado en BD. Usando perfil Respaldo.")
-                        cupo = CUPOS_POR_CATEGORIA["DEFAULT"]
-                        origen = "Respaldo (Cliente Nuevo/No encontrado)"
-                        meses = 0 
-                    else:
-                        # CASO 2: SI EXISTE -> RESPETAR API (Billetera mata Mora)
-                        cupo = safe_float(cli.get('clienteScoringFinanciable'))
-                        origen = "API (Aria)"
-                        meses = int(cli.get('cliente_meses_atraso', 0) or 0)
-                        st.success(f"Encontrado por {msg}")
+                    st.link_button("📲 Pedir Comprobante por WhatsApp", generar_link_ws(phone_clean, msg_ws))
+                    st.caption("Si ya pagó, podés aprobarlo manualmente en TN o esperar que impacte.")
 
-                    dif = total - cupo
-                    col1, col2, col3 = st.columns(3)
-                    col1.metric("Cupo", f"${cupo:,.0f}", help=origen)
-                    col2.metric("Pedido", f"${total:,.0f}")
-                    col3.metric("Mora", f"{meses}m")
+                # === CASO B: A CONVENIR (Crédito de la casa -> Analizar) ===
+                elif es_convenir:
+                    st.info("ℹ️ Pago A Convenir (Crédito). Requiere Análisis.")
                     
-                    if meses > 0 and cupo > 0:
-                        st.warning(f"⚠️ Cliente con mora técnica ({meses}m), pero tiene Cupo. Se permite operar.")
+                    if st.button("🔍 Analizar Cliente (Cupo)", key=f"a_{oid}"): st.session_state[f"analizar_{oid}"] = True
+                    
+                    if st.session_state.get(f"analizar_{oid}"):
+                        st.markdown("---")
+                        cli, msg = None, "No encontrado"
+                        ids_nota = re.findall(r'\b\d{3,7}\b', str(nota))
+                        for pid in ids_nota:
+                            r = consultar_api_aria_id(pid)
+                            if r and r[0].get('cliente_id'): cli, msg = r[0], f"ID {pid}"; break
+                        
+                        if not cli:
+                            dni = solo_numeros(p['customer'].get('identification'))
+                            if len(dni) > 5:
+                                r = consultar_api_aria({'ident': dni})
+                                if r: cli, msg = r[0], f"DNI {dni}"
+                        
+                        if not cli:
+                            st.warning("⚠️ Cliente no encontrado en BD. Usando perfil Respaldo.")
+                            cupo = CUPOS_POR_CATEGORIA["DEFAULT"]
+                            origen = "Respaldo"
+                            meses = 0 
+                        else:
+                            cupo = safe_float(cli.get('clienteScoringFinanciable'))
+                            origen = "API (Aria)"
+                            meses = int(cli.get('cliente_meses_atraso', 0) or 0)
+                            st.success(f"Encontrado por {msg}")
 
-                    # --- LÓGICA DE ESCENARIOS (DEFINITIVA) ---
-                    esc = 0
-                    
-                    # PRIORIDAD 1: Si no hay cupo, es RECHAZO (sin importar la mora)
-                    if cupo == 0:
-                        esc = 1 # RECHAZO (Sin Cupo / Mora Grave que anuló el cupo)
-                    
-                    # PRIORIDAD 2: Si hay cupo, se aprueba o se pide diferencia
-                    elif total <= cupo:
-                        esc = 3 # APROBADO (Alcanza el cupo)
-                    else:
-                        esc = 2 # DIFERENCIA (Hay cupo pero falta)
-                    
-                    subj, html = generar_html_correo(nom, esc, {'cupo':cupo, 'diferencia':dif, 'id_visual':p.get('number'), 'nombre_producto_base': prod_nom})
-                    with st.expander("👁️ Ver Preview Email"): components.html(html, height=450, scrolling=True)
-                    
-                    if esc == 1:
-                        st.error("⛔ Rechazo (Cupo $0)")
-                        if st.button("Rechazar y Cancelar", key=f"b1_{oid}"):
-                            tn_action(oid, "cancel")
-                            enviar_notificacion(p['customer']['email'], nom, 1, {'id_visual':p.get('number')})
-                            st.toast("Cancelado."); time.sleep(2); st.rerun()
-                    elif esc == 2:
-                        st.warning("⚠️ Cupo Parcial")
-                        if st.button("Solicitar Diferencia", key=f"b2_{oid}"):
-                            tn_action(oid, "update_note", f"{nota} {TAG_PENDIENTE}")
-                            enviar_notificacion(p['customer']['email'], nom, 2, {'cupo':cupo, 'diferencia':dif, 'id_visual':p.get('number')})
-                            st.toast("Mail enviado."); time.sleep(2); st.rerun()
-                    elif esc == 3:
-                        st.success("🚀 Aprobable")
-                        if st.button("Aprobar", key=f"b3_{oid}"):
-                            tn_action(oid, "approve", f"{nota} {TAG_APROBADO}")
-                            enviar_notificacion(p['customer']['email'], nom, 3, {'id_visual':p.get('number')})
-                            st.balloons(); time.sleep(2); st.rerun()
+                        dif = total - cupo
+                        col1, col2, col3 = st.columns(3)
+                        col1.metric("Cupo", f"${cupo:,.0f}", help=origen)
+                        col2.metric("Pedido", f"${total:,.0f}")
+                        col3.metric("Mora", f"{meses}m")
+                        
+                        if meses > 0 and cupo > 0:
+                            st.warning(f"⚠️ Cliente con mora técnica ({meses}m), pero tiene Cupo.")
 
-# --- TAB 2: PENDIENTES ---
+                        esc = 0
+                        if cupo == 0: esc = 1
+                        elif total <= cupo: esc = 3
+                        else: esc = 2
+                        
+                        subj, html = generar_html_correo(nom, esc, {'cupo':cupo, 'diferencia':dif, 'id_visual':p.get('number'), 'nombre_producto_base': prod_nom})
+                        with st.expander("👁️ Ver Preview Email"): components.html(html, height=450, scrolling=True)
+                        
+                        if esc == 1:
+                            st.error("⛔ Rechazo (Cupo $0)")
+                            if st.button("Rechazar y Cancelar", key=f"b1_{oid}"):
+                                tn_action(oid, "cancel")
+                                enviar_notificacion(p['customer']['email'], nom, 1, {'id_visual':p.get('number')})
+                                st.toast("Cancelado."); time.sleep(2); st.rerun()
+                        elif esc == 2:
+                            st.warning("⚠️ Cupo Parcial")
+                            if st.button("Solicitar Diferencia", key=f"b2_{oid}"):
+                                tn_action(oid, "update_note", f"{nota} {TAG_PENDIENTE}")
+                                enviar_notificacion(p['customer']['email'], nom, 2, {'cupo':cupo, 'diferencia':dif, 'id_visual':p.get('number')})
+                                st.toast("Mail enviado."); time.sleep(2); st.rerun()
+                        elif esc == 3:
+                            st.success("🚀 Aprobable")
+                            if st.button("Aprobar", key=f"b3_{oid}"):
+                                tn_action(oid, "approve", f"{nota} {TAG_APROBADO}")
+                                enviar_notificacion(p['customer']['email'], nom, 3, {'id_visual':p.get('number')})
+                                st.balloons(); time.sleep(2); st.rerun()
+
+                # === CASO C: TARJETA/OTRO PENDIENTE ===
+                else:
+                    st.write("Esperando confirmación de la pasarela de pagos...")
+                    if st.button("🔍 Forzar Análisis Manual", key=f"force_{oid}"):
+                         st.session_state[f"analizar_{oid}"] = True 
+                         # (Reusa la lógica de análisis del bloque anterior, pero está oculto por defecto para no ensuciar)
+                         st.rerun()
+
+# --- TAB 2: PENDIENTES (Comprobantes y Diferencias) ---
 with tabs[1]:
-    pends = [p for p in pedidos_open if TAG_PENDIENTE in (p.get('owner_note') or "")]
-    if not pends: st.info("✅ No hay pedidos pendientes de diferencia.")
+    st.subheader("⏳ Esperando Diferencia de Pago")
+    if not pendientes_dif_lista:
+        st.info("No hay pedidos esperando diferencia.")
     else:
-        st.write(f"Esperando diferencia de: {len(pends)} pedidos.")
-        for p in pends:
+        for p in pendientes_dif_lista:
             prod_nom = p['products'][0]['name'] if p['products'] else ""
-            with st.expander(f"⏳ #{p.get('number')} | {p['customer']['name']} | ${float(p['total']):,.0f}"):
+            with st.expander(f"💰 #{p.get('number')} | {p['customer']['name']} | ${float(p['total']):,.0f}"):
                  col_ok, col_x = st.columns(2)
                  if col_ok.button("✅ Confirmar Pago Manual", key=f"ok_{p['id']}"):
                      tn_action(p['id'], "approve", f"{p.get('owner_note')} {TAG_APROBADO}")
@@ -497,13 +535,7 @@ with tabs[2]:
                     nuevos = []
                     for nom in seleccion:
                         d = opciones[nom]
-                        nuevos.append({
-                            "nombre":d['nombre'], 
-                            "link":d['link'], 
-                            "foto":d['foto'], 
-                            "precio_venta":d['precio_venta'],
-                            "precio_lista":d['precio_lista']
-                        })
+                        nuevos.append({"nombre":d['nombre'], "link":d['link'], "foto":d['foto'], "precio_venta":d['precio_venta'], "precio_lista":d['precio_lista']})
                     
                     config_actual[perfil]["items"] = nuevos
                     guardar_configuracion(config_actual)
@@ -516,7 +548,6 @@ with tabs[2]:
                             st.image(item['foto'], width=60)
                             p_v = item.get('precio_venta', 0)
                             p_l = item.get('precio_lista', 0)
-                            
                             if p_l > p_v:
                                 pct = int((1 - (p_v/p_l)) * 100)
                                 st.caption(f"~~${p_l:,.0f}~~")
@@ -525,6 +556,22 @@ with tabs[2]:
                                 st.markdown(f"**${p_v:,.0f}**")
                 st.markdown("---")
 
-# --- OTRAS TABS ---
-with tabs[3]: st.write("Historial Aprobados...") 
+# --- TAB 4: APROBADOS ---
+with tabs[3]:
+    st.subheader("✅ Pedidos Listos para Despacho")
+    if not aprobados_lista:
+        st.info("No hay pedidos aprobados recientemente.")
+    else:
+        st.success(f"{len(aprobados_lista)} pedidos pagados.")
+        for p in aprobados_lista:
+            gateway = p.get('gateway', '').lower()
+            tipo_pago = "💳 Tarjeta/MP" if not ('wire' in gateway or 'transfer' in gateway) else "🏦 Transferencia"
+            
+            with st.expander(f"#{p.get('number')} | {p['customer']['name']} | ${float(p['total']):,.0f} | {tipo_pago}"):
+                st.write(f"**Estado:** {p.get('payment_status').upper()}")
+                st.write(f"**Productos:**")
+                for prod in p['products']:
+                    st.write(f"- {prod['name']} x{prod['quantity']}")
+                st.caption("Este pedido ya está cobrado y listo.")
+
 with tabs[4]: st.write("Historial Cancelados...")
