@@ -375,32 +375,35 @@ with tabs[0]:
             nota = p.get('owner_note') or ""
             prod_nom = p['products'][0]['name'] if p['products'] else ""
             
-            # --- 🔍 BLOQUE DE DIAGNÓSTICO (DEBUG) ---
-            with st.expander(f"🛠️ DIAGNÓSTICO TÉCNICO - {nom}"):
-                st.write("Pasame captura de esto:")
-                st.code(f"""
-                GATEWAY: {p.get('gateway')}
-                GATEWAY_NAME: {p.get('gateway_name')}
-                PAYMENT_DETAILS: {p.get('payment_details')}
-                """, language="yaml")
-            # ----------------------------------------
-            
-            # --- DETECCIÓN DE PAGO (Lógica Temporal para Debug) ---
-            # Por ahora mantenemos la lógica anterior hasta ver el diagnóstico
+            # --- DETECCIÓN DE PAGO (LÓGICA CORREGIDA X CAPTURA) ---
             gateway = str(p.get('gateway', '')).lower()
-            payment_title = str(p.get('payment_details', {}).get('title', '')).lower()
             gateway_name = str(p.get('gateway_name', '')).lower()
-            texto_pago = f"{gateway} {payment_title} {gateway_name}"
-
-            es_convenir = 'convenir' in texto_pago or 'acordar' in texto_pago
-            es_transferencia = False
-            if not es_convenir:
-                es_transferencia = 'transfer' in texto_pago or 'depó' in texto_pago or 'wire' in texto_pago
-            es_tarjeta = not (es_convenir or es_transferencia)
+            payment_title = str(p.get('payment_details', {}).get('title', '')).lower()
             
-            # RENDERIZADO
-            if es_convenir:
-                titulo = f"🤝 A Convenir (Crédito) | #{p.get('number')} | {nom} | ${total:,.0f}"
+            # Creamos una "frase maestra" con todo el texto disponible
+            texto_pago = f"{gateway} {gateway_name} {payment_title}"
+
+            # 1. ¿ES CRÉDITO/FINANCIACIÓN? (Prioridad)
+            # Buscamos palabras clave reales que vimos en la captura
+            es_financiacion = (
+                'financiación' in texto_pago or 
+                'factura' in texto_pago or 
+                'ssservicios' in texto_pago or 
+                'convenir' in texto_pago or 
+                'acordar' in texto_pago
+            )
+
+            # 2. ¿ES TRANSFERENCIA?
+            es_transferencia = False
+            if not es_financiacion:
+                es_transferencia = 'transfer' in texto_pago or 'depó' in texto_pago or 'wire' in gateway
+
+            # 3. ¿ES TARJETA? (Descarte)
+            es_tarjeta = not (es_financiacion or es_transferencia)
+            
+            # RENDERIZADO VISUAL
+            if es_financiacion:
+                titulo = f"🤝 Financiación/Crédito | #{p.get('number')} | {nom} | ${total:,.0f}"
             elif es_transferencia:
                 titulo = f"🏦 Transferencia | #{p.get('number')} | {nom} | ${total:,.0f}"
             else:
@@ -408,9 +411,9 @@ with tabs[0]:
 
             with st.expander(titulo):
                 
-                # === CASO 1: CRÉDITO (A CONVENIR) ===
-                if es_convenir:
-                    st.info("ℹ️ Solicitud de Crédito (Personalizado). Requiere Análisis.")
+                # === CASO 1: FINANCIACIÓN (Crédito) ===
+                if es_financiacion:
+                    st.info("ℹ️ Solicitud de Financiación en Factura. Requiere Análisis.")
                     
                     if st.button("🔍 Analizar Cliente (Cupo)", key=f"a_{oid}"): st.session_state[f"analizar_{oid}"] = True
                     
@@ -428,8 +431,11 @@ with tabs[0]:
                                 r = consultar_api_aria({'ident': dni})
                                 if r: cli, msg = r[0], f"DNI {dni}"
                         
+                        # -> CLIENTE EXTERNO
                         if not cli:
                             st.info("🌍 Cliente Externo (No registrado en ARIA).")
+                            st.caption("Verificar manualmente si es una venta externa.")
+                            
                             c_m1, c_m2 = st.columns(2)
                             if c_m1.button("✅ Aprobar Manual", key=f"ok_man_{oid}"):
                                 tn_action(oid, "approve", f"{nota} {TAG_APROBADO}")
@@ -438,6 +444,7 @@ with tabs[0]:
                                 tn_action(oid, "cancel")
                                 st.error("Cancelado."); time.sleep(1); st.rerun()
                         else:
+                            # -> CLIENTE ARIA
                             cupo = safe_float(cli.get('clienteScoringFinanciable'))
                             origen = "API (Aria)"
                             meses = int(cli.get('cliente_meses_atraso', 0) or 0)
@@ -479,7 +486,7 @@ with tabs[0]:
                                     enviar_notificacion(p['customer']['email'], nom, 3, {'id_visual':p.get('number')})
                                     st.balloons(); time.sleep(2); st.rerun()
 
-                # === CASO 2: TRANSFERENCIA ===
+                # === CASO 2: TRANSFERENCIA (Pedir Comprobante) ===
                 elif es_transferencia:
                     st.info("ℹ️ Pago por Transferencia Pendiente.")
                     msg_ws = f"Hola {nom}, gracias por tu compra #{p.get('number')}. Para procesar el envío necesitamos que nos envíes el comprobante de transferencia por este medio. ¡Gracias!"
@@ -487,7 +494,7 @@ with tabs[0]:
                     if not phone_clean: phone_clean = "" 
                     st.link_button("📲 Pedir Comprobante por WhatsApp", generar_link_ws(phone_clean, msg_ws))
 
-                # === CASO 3: TARJETA ===
+                # === CASO 3: TARJETA/PASARELA (Listo para despacho) ===
                 else:
                     st.success("✅ Pago con Tarjeta/Pasarela detectado. Listo para despacho.")
                     st.caption("Si ya ves el pago en MP/Billetera, confirmá acá para archivarlo.")
