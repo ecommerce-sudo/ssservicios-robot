@@ -338,6 +338,7 @@ if st.sidebar.button("Consultar"):
                 if meses > 0: st.sidebar.warning(f"⚠️ Mora: {meses} meses (Cupo habilitado)")
                 else: st.sidebar.info("Al día")
             else: 
+                # CLIENTE EXTERNO
                 st.info("🌍 Cliente Externo (No registrado en ARIA).")
                 st.caption("Verificar manualmente si corresponde a una venta con Tarjeta o Transferencia desde otra provincia.")
 
@@ -373,36 +374,53 @@ with tabs[0]:
             nota = p.get('owner_note') or ""
             prod_nom = p['products'][0]['name'] if p['products'] else ""
             
-            # --- DETECCIÓN INTELIGENTE DE PAGO ---
+            # --- DETECCIÓN INTELIGENTE DE PAGO (NUEVA LÓGICA) ---
             gateway = str(p.get('gateway', '')).lower()
             payment_title = str(p.get('payment_details', {}).get('title', '')).lower()
-            gateway_name = str(p.get('gateway_name', '')).lower()
             
-            # Unimos todo en un string para buscar palabras clave
-            texto_pago = f"{gateway} {payment_title} {gateway_name}"
+            # 1. Definimos el TIPO DE PAGO por variables estrictas
+            
+            # LISTA BLANCA DE PASARELAS (Si es alguna de estas, es TARJETA)
+            pasarelas_digitales = ['mercadopago', 'todo_pago', 'payu', 'stripe', 'mobbex', 'decidir', 'credit_card', 'debit_card']
+            
+            es_pasarela = any(x in gateway for x in pasarelas_digitales)
+            
+            # Si el gateway dice "custom" (Personalizado) o "wire_transfer", NO es pasarela automática
+            if 'custom' in gateway or 'wire' in gateway:
+                es_pasarela = False
 
-            # LÓGICA DE PRIORIDAD
-            es_convenir = 'convenir' in texto_pago or 'acordar' in texto_pago
+            # DETECCIÓN DE TRANSFERENCIA
+            # Se considera transferencia si el gateway es 'wire_transfer' 
+            # O si en el texto del pago dice explícitamente "transfer" o "depós"
+            texto_pago = f"{gateway} {payment_title}"
+            es_transferencia = 'wire' in gateway or 'transfer' in texto_pago or 'depó' in texto_pago
             
-            es_transferencia = False
-            if not es_convenir:
-                es_transferencia = 'transfer' in texto_pago or 'depó' in texto_pago or 'wire' in texto_pago
+            # DETECCIÓN DE A CONVENIR (CRÉDITO)
+            # Todo lo que sea 'custom' (Personalizado) y NO sea transferencia, asumimos que es CRÉDITO
+            # Esto atrapa el caso de Abigail donde dice "A convenir" o simplemente "Personalizado"
+            es_convenir = False
+            if 'custom' in gateway and not es_transferencia:
+                es_convenir = True
+            
+            # REGLA FINAL: Si dice "convenir" o "acordar" explícitamente, gana sobre todo.
+            if 'convenir' in texto_pago or 'acordar' in texto_pago:
+                es_convenir = True
+                es_transferencia = False
+                es_pasarela = False
 
-            es_tarjeta = not (es_convenir or es_transferencia)
-            
-            # TITULOS
+            # RENDERIZADO VISUAL
             if es_convenir:
                 titulo = f"🤝 A Convenir (Crédito) | #{p.get('number')} | {nom} | ${total:,.0f}"
             elif es_transferencia:
                 titulo = f"🏦 Transferencia | #{p.get('number')} | {nom} | ${total:,.0f}"
-            else:
+            else: # Por descarte, si no es custom ni transferencia, es Pasarela
                 titulo = f"💳 Tarjeta/Pasarela | #{p.get('number')} | {nom} | ${total:,.0f}"
 
             with st.expander(titulo):
                 
-                # === CASO 1: CRÉDITO (A CONVENIR) ===
+                # === CASO 1: CRÉDITO (A CONVENIR - DEFAULT PARA CUSTOM) ===
                 if es_convenir:
-                    st.info("ℹ️ Solicitud de Crédito (A Convenir). Requiere Análisis.")
+                    st.info("ℹ️ Solicitud de Crédito (Personalizado). Requiere Análisis.")
                     
                     if st.button("🔍 Analizar Cliente (Cupo)", key=f"a_{oid}"): st.session_state[f"analizar_{oid}"] = True
                     
@@ -484,7 +502,7 @@ with tabs[0]:
                     st.link_button("📲 Pedir Comprobante por WhatsApp", generar_link_ws(phone_clean, msg_ws))
 
                 # === CASO 3: TARJETA/PASARELA (Listo para despacho) ===
-                elif es_tarjeta:
+                else:
                     st.success("✅ Pago con Tarjeta/Pasarela detectado. Listo para despacho.")
                     st.caption("Si ya ves el pago en MP/Billetera, confirmá acá para archivarlo.")
                     
