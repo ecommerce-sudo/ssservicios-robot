@@ -30,8 +30,11 @@ FILE_CONFIG = "recomendados.json"
 TAG_PENDIENTE = "#PENDIENTE_PAGO"
 TAG_APROBADO = "#APROBADO"
 
+# Inicializar estados de memoria
 if 'analisis_activo' not in st.session_state:
     st.session_state['analisis_activo'] = {}
+if 'expanded_oid' not in st.session_state:
+    st.session_state['expanded_oid'] = None # Para recordar cual desplegable abrir
 
 # ==========================================
 # 🔌 2. FUNCIONES DE CONEXIÓN
@@ -247,7 +250,7 @@ def generar_html_correo(nombre_cliente, escenario, datos_extra={}):
     cuerpo = ""
     asunto = ""
 
-    if escenario == 1: # RECHAZO
+    if escenario == 1: # RECHAZO (Por Cupo o Por Mora)
         asunto = f"Información sobre tu pedido #{id_visual}"
         cuerpo = f"""
             <p>Hola <strong>{nombre_cliente}</strong>,</p>
@@ -375,16 +378,13 @@ with tabs[0]:
             nota = p.get('owner_note') or ""
             prod_nom = p['products'][0]['name'] if p['products'] else ""
             
-            # --- DETECCIÓN DE PAGO (LÓGICA CORREGIDA X CAPTURA) ---
+            # --- DETECCIÓN DE PAGO ---
             gateway = str(p.get('gateway', '')).lower()
             gateway_name = str(p.get('gateway_name', '')).lower()
             payment_title = str(p.get('payment_details', {}).get('title', '')).lower()
-            
-            # Creamos una "frase maestra" con todo el texto disponible
             texto_pago = f"{gateway} {gateway_name} {payment_title}"
 
-            # 1. ¿ES CRÉDITO/FINANCIACIÓN? (Prioridad)
-            # Buscamos palabras clave reales que vimos en la captura
+            # 1. CRÉDITO/FINANCIACIÓN
             es_financiacion = (
                 'financiación' in texto_pago or 
                 'factura' in texto_pago or 
@@ -393,12 +393,12 @@ with tabs[0]:
                 'acordar' in texto_pago
             )
 
-            # 2. ¿ES TRANSFERENCIA?
+            # 2. TRANSFERENCIA
             es_transferencia = False
             if not es_financiacion:
                 es_transferencia = 'transfer' in texto_pago or 'depó' in texto_pago or 'wire' in gateway
 
-            # 3. ¿ES TARJETA? (Descarte)
+            # 3. TARJETA
             es_tarjeta = not (es_financiacion or es_transferencia)
             
             # RENDERIZADO VISUAL
@@ -409,13 +409,20 @@ with tabs[0]:
             else:
                 titulo = f"💳 Tarjeta/Pasarela | #{p.get('number')} | {nom} | ${total:,.0f}"
 
-            with st.expander(titulo):
+            # MEMORIA VISUAL: Chequeamos si este expander debe estar abierto
+            esta_abierto = (st.session_state['expanded_oid'] == oid)
+
+            with st.expander(titulo, expanded=esta_abierto):
                 
                 # === CASO 1: FINANCIACIÓN (Crédito) ===
                 if es_financiacion:
                     st.info("ℹ️ Solicitud de Financiación en Factura. Requiere Análisis.")
                     
-                    if st.button("🔍 Analizar Cliente (Cupo)", key=f"a_{oid}"): st.session_state[f"analizar_{oid}"] = True
+                    # Botón que activa el análisis y "traba" el expander abierto
+                    if st.button("🔍 Analizar Cliente (Cupo)", key=f"a_{oid}"): 
+                        st.session_state[f"analizar_{oid}"] = True
+                        st.session_state['expanded_oid'] = oid # GUARDAMOS EL ESTADO
+                        st.rerun() # RECARGAMOS PARA APLICAR EL EXPANDED=TRUE
                     
                     if st.session_state.get(f"analizar_{oid}"):
                         st.markdown("---")
@@ -456,35 +463,68 @@ with tabs[0]:
                             col2.metric("Pedido", f"${total:,.0f}")
                             col3.metric("Mora", f"{meses}m")
                             
-                            if meses > 0 and cupo > 0:
-                                st.warning(f"⚠️ Cliente con mora técnica ({meses}m), pero tiene Cupo.")
-
+                            # --- LÓGICA DE DECISIÓN (NUEVA POLÍTICA MORA) ---
                             esc = 0
-                            if cupo == 0: esc = 1
-                            elif total <= cupo: esc = 3
-                            else: esc = 2
                             
-                            subj, html = generar_html_correo(nom, esc, {'cupo':cupo, 'diferencia':dif, 'id_visual':p.get('number'), 'nombre_producto_base': prod_nom})
-                            with st.expander("👁️ Ver Preview Email"): components.html(html, height=450, scrolling=True)
-                            
+                            # Si tiene MORA > 0, Bloqueamos la aprobación automática
+                            tiene_mora = (meses > 0)
+
+                            if cupo == 0: 
+                                esc = 1 # RECHAZO CUPO 0
+                            elif total <= cupo: 
+                                esc = 3 # APROBABLE (Si no tuviera mora)
+                            else: 
+                                esc = 2 # DIFERENCIA
+
+                            # RENDERIZADO DE ACCIONES
                             if esc == 1:
-                                st.error("⛔ Rechazo (Cupo $0)")
+                                st.error("⛔ Rechazo Automático (Cupo $0)")
                                 if st.button("Rechazar y Cancelar", key=f"b1_{oid}"):
                                     tn_action(oid, "cancel")
                                     enviar_notificacion(p['customer']['email'], nom, 1, {'id_visual':p.get('number')})
                                     st.toast("Cancelado."); time.sleep(2); st.rerun()
+
                             elif esc == 2:
-                                st.warning("⚠️ Cupo Parcial")
+                                st.warning("⚠️ Cupo Parcial (Requiere Diferencia)")
                                 if st.button("Solicitar Diferencia", key=f"b2_{oid}"):
                                     tn_action(oid, "update_note", f"{nota} {TAG_PENDIENTE}")
                                     enviar_notificacion(p['customer']['email'], nom, 2, {'cupo':cupo, 'diferencia':dif, 'id_visual':p.get('number')})
                                     st.toast("Mail enviado."); time.sleep(2); st.rerun()
-                            elif esc == 3:
-                                st.success("🚀 Aprobable")
-                                if st.button("Aprobar", key=f"b3_{oid}"):
-                                    tn_action(oid, "approve", f"{nota} {TAG_APROBADO}")
-                                    enviar_notificacion(p['customer']['email'], nom, 3, {'id_visual':p.get('number')})
-                                    st.balloons(); time.sleep(2); st.rerun()
+
+                            elif esc == 3: # Cupo cubre todo
+                                if tiene_mora:
+                                    st.error(f"🛑 ALERTA DE RIESGO: Cliente con {meses} meses de Mora.")
+                                    st.write("El sistema ha pausado la aprobación automática.")
+                                    
+                                    col_mora_1, col_mora_2 = st.columns(2)
+                                    
+                                    # Opción A: Rechazar por Mora
+                                    if col_mora_1.button("🚫 Rechazar por Mora", key=f"rej_mora_{oid}"):
+                                        tn_action(oid, "cancel")
+                                        # Usamos escenario 1 (Rechazo genérico)
+                                        enviar_notificacion(p['customer']['email'], nom, 1, {'id_visual':p.get('number')})
+                                        st.error("Rechazado por Mora."); time.sleep(2); st.rerun()
+
+                                    # Opción B: Aprobar Excepción
+                                    if col_mora_2.button("✅ Aprobar (Excepción)", key=f"ok_mora_{oid}"):
+                                        tn_action(oid, "approve", f"{nota} {TAG_APROBADO}")
+                                        enviar_notificacion(p['customer']['email'], nom, 3, {'id_visual':p.get('number')})
+                                        st.success("Excepción Aprobada."); time.sleep(2); st.rerun()
+                                    
+                                    # Preview del mail (Muestra el de rechazo por defecto si hay mora)
+                                    subj, html = generar_html_correo(nom, 1, {'id_visual':p.get('number')})
+                                    with st.expander("👁️ Ver Email de Rechazo"): components.html(html, height=450, scrolling=True)
+
+                                else:
+                                    st.success("🚀 Aprobable (Sin Deuda)")
+                                    if st.button("Aprobar", key=f"b3_{oid}"):
+                                        tn_action(oid, "approve", f"{nota} {TAG_APROBADO}")
+                                        enviar_notificacion(p['customer']['email'], nom, 3, {'id_visual':p.get('number')})
+                                        st.balloons(); time.sleep(2); st.rerun()
+                                    
+                                    subj, html = generar_html_correo(nom, 3, {'id_visual':p.get('number')})
+                                    with st.expander("👁️ Ver Preview Email"): components.html(html, height=450, scrolling=True)
+
 
                 # === CASO 2: TRANSFERENCIA (Pedir Comprobante) ===
                 elif es_transferencia:
@@ -492,7 +532,15 @@ with tabs[0]:
                     msg_ws = f"Hola {nom}, gracias por tu compra #{p.get('number')}. Para procesar el envío necesitamos que nos envíes el comprobante de transferencia por este medio. ¡Gracias!"
                     phone_clean = solo_numeros(p['customer'].get('phone', ''))
                     if not phone_clean: phone_clean = "" 
+                    
                     st.link_button("📲 Pedir Comprobante por WhatsApp", generar_link_ws(phone_clean, msg_ws))
+                    
+                    # BOTÓN NUEVO: Mover a Pendientes
+                    st.write("")
+                    if st.button("✅ Ya solicité comprobante (Mover a Pendientes)", key=f"mov_pend_{oid}"):
+                        tn_action(oid, "update_note", f"{nota} {TAG_PENDIENTE}")
+                        st.toast("Movido a Pendientes"); time.sleep(1); st.rerun()
+
 
                 # === CASO 3: TARJETA/PASARELA (Listo para despacho) ===
                 else:
