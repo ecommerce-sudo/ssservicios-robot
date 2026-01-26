@@ -1,530 +1,263 @@
 import streamlit as st
 import requests
-import re
 import smtplib
 import time
-import json
-import os
-import urllib.parse
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-import streamlit.components.v1 as components
 
 # ==========================================
-# ⚙️ 1. CONFIGURACIÓN Y SECRETOS
+# ⚙️ CONFIGURACIÓN DE PÁGINA Y SECRETOS
 # ==========================================
+st.set_page_config(page_title="Gestor de Cobranzas SSS", layout="wide", page_icon="🤖")
+
 try:
     TN_TOKEN = st.secrets["TN_TOKEN"]
     TN_ID = st.secrets["TN_ID"]
     ARIA_KEY = st.secrets["ARIA_KEY"]
+    SMTP_SERVER = st.secrets["email"]["smtp_server"]
+    SMTP_PORT = st.secrets["email"]["smtp_port"]
+    SMTP_USER = st.secrets["email"]["smtp_user"]
+    SMTP_PASS = st.secrets["email"]["smtp_password"]
 except Exception as e:
-    st.error(f"⚠️ Error de Configuración: Faltan claves en Secrets ({e})")
+    st.error(f"⚠️ Error de Configuración: Faltan claves en .streamlit/secrets.toml ({e})")
     st.stop()
 
-TN_USER_AGENT = "RobotWeb (24705)"
+# Constantes
+TN_URL = f"https://api.tiendanube.com/v1/{TN_ID}"
+HEADERS_TN = {"Authentication": f"bearer {TN_TOKEN}", "User-Agent": "RobotCobranzas (1.0)"}
 ARIA_URL_BASE = "https://api.anatod.ar/api"
-NUMERO_WHATSAPP = "5492966840059"
-FILE_CONFIG = "recomendados.json"
 
-# ETIQUETAS
 TAG_PENDIENTE = "#PENDIENTE_PAGO"
+TAG_ESPERA_COMPROBANTE = "#ESPERANDO_COMPROBANTE"
 TAG_APROBADO = "#APROBADO"
 
-# === 🛡️ CUPOS DE RESPALDO (SOLO PARA CLIENTES NO ENCONTRADOS) ===
-CUPOS_POR_CATEGORIA = {
-    "DEFAULT": 100000.0 # 👈 Único valor usado si el cliente NO existe en base
-}
-
+# Inicializar estado
 if 'analisis_activo' not in st.session_state:
     st.session_state['analisis_activo'] = {}
 
 # ==========================================
-# 🔌 2. FUNCIONES DE CONEXIÓN
+# 🧠 CEREBRO DE CROSS-SELLING
 # ==========================================
-
-def safe_float(value):
-    try:
-        if value is None or value == "": return 0.0
-        clean_val = str(value).replace("$", "").replace(" ", "").replace(",", ".")
-        return float(clean_val)
-    except: return 0.0
-
-def solo_numeros(texto):
-    if texto is None: return ""
-    return re.sub(r'\D', '', str(texto))
-
-def consultar_api_aria_id(cliente_id):
-    headers = {"x-api-key": ARIA_KEY, "Content-Type": "application/json"}
-    try:
-        res = requests.get(f"{ARIA_URL_BASE}/cliente/{cliente_id}", headers=headers, timeout=5)
-        if res.status_code == 200:
-            d = res.json()
-            if isinstance(d, list): return d
-            if isinstance(d, dict): return [d]
-        return []
-    except: return []
-
-def consultar_api_aria(params):
-    headers = {"x-api-key": ARIA_KEY, "Content-Type": "application/json"}
-    try:
-        res = requests.get(f"{ARIA_URL_BASE}/clientes", headers=headers, params=params, timeout=8)
-        if res.status_code == 200:
-            d = res.json()
-            if isinstance(d, dict) and "data" in d: return d["data"]
-            if isinstance(d, list): return d
-            if isinstance(d, dict): return [d]
-        return []
-    except: return []
-
-def obtener_pedidos(estado="open"):
-    url = f"https://api.tiendanube.com/v1/{TN_ID}/orders?status={estado}&per_page=200"
-    headers = {'Authentication': f'bearer {TN_TOKEN}', 'User-Agent': TN_USER_AGENT}
-    try:
-        res = requests.get(url, headers=headers)
-        return res.json() if res.status_code == 200 else []
-    except: return []
-
-def tn_action(oid, action, note=None):
-    headers = {'Authentication': f'bearer {TN_TOKEN}', 'User-Agent': TN_USER_AGENT}
-    url = f"https://api.tiendanube.com/v1/{TN_ID}/orders/{oid}"
-    data = {}
-    if action == "approve": 
-        data = {"payment_status": "paid", "owner_note": note}
-    elif action == "cancel": 
-        requests.post(f"{url}/cancel", headers=headers, json={"reason": "other"})
-        return
-    elif action == "update_note": 
-        data = {"owner_note": note}
-    
-    requests.put(url, headers=headers, json=data)
-
-# === 🛒 CATÁLOGO INTELIGENTE TN ===
-@st.cache_data(ttl=600)
-def get_catalogo_tn_filtrado():
-    url = f"https://api.tiendanube.com/v1/{TN_ID}/products?per_page=200"
-    headers = {'Authentication': f'bearer {TN_TOKEN}', 'User-Agent': TN_USER_AGENT}
-    try:
-        res = requests.get(url, headers=headers)
-        if res.status_code == 200:
-            lista = []
-            for p in res.json():
-                if not p.get('published'): continue
-                if not p.get('images') or len(p['images']) == 0: continue
-                
-                foto_src = p['images'][0]['src']
-                
-                p_original = safe_float(p.get('price')) 
-                p_promo = safe_float(p.get('promotional_price'))
-                
-                if (p_original == 0 and p_promo == 0) and p.get('variants'):
-                    v = p['variants'][0]
-                    p_original = safe_float(v.get('price'))
-                    p_promo = safe_float(v.get('promotional_price'))
-
-                precio_venta = 0.0
-                precio_tachado = 0.0
-                
-                if p_promo > 0 and p_promo < p_original:
-                    precio_venta = p_promo
-                    precio_tachado = p_original
-                elif p_original > 0:
-                    precio_venta = p_original
-                    precio_tachado = 0.0 
-                elif p_promo > 0:
-                    precio_venta = p_promo
-                    precio_tachado = 0.0
-
-                if precio_venta <= 0: continue 
-
-                tiene_stock = False
-                stock_val = int(p.get('stock', 0) or 0)
-                if not p.get('stock_control'): tiene_stock = True
-                elif stock_val > 0: tiene_stock = True
-
-                if not tiene_stock: continue
-
-                lista.append({
-                    "id": str(p['id']),
-                    "nombre": p['name']['es'],
-                    "precio_venta": precio_venta,    
-                    "precio_lista": precio_tachado,  
-                    "foto": foto_src,
-                    "link": p.get('canonical_url', '#')
-                })
-            return lista
-        return []
-    except: return []
-
-# ==========================================
-# 💾 3. GESTIÓN DE CONFIGURACIÓN
-# ==========================================
-
-DEFAULT_CONFIG = {
-    "GAMING": {"keywords": ["gamer", "juego", "play", "ps4", "pc"], "items": []},
-    "CONECTIVIDAD": {"keywords": ["wifi", "router", "internet"], "items": []},
-    "MOVILIDAD": {"keywords": ["celular", "samsung", "iphone"], "items": []},
-    "HOGAR": {"keywords": ["tv", "smart", "casa", "electro"], "items": []}
+PERFILES_INTERES = {
+    "GAMING": {
+        "keywords": ["gamer", "juego", "playstation", "ps4", "ps5", "joystick", "rtx", "teclado", "mecanico", "redragon", "pc", "mouse"],
+        "items": [
+            {"titulo": "Mouse Redragon M703", "link": "https://ssstore.com.ar/productos/mouse-cerberus-redragon-m703/"},
+            {"titulo": "Auricular Redragon H211", "link": "https://ssstore.com.ar/productos/auricular-vincha-cronus-redragon-h211w-rgb/"}
+        ]
+    },
+    "CONECTIVIDAD": {
+        "keywords": ["starlink", "router", "antena", "wifi", "ubiquiti", "internet", "mesh", "cable", "red"],
+        "items": [
+            {"titulo": "Router Huawei AX2", "link": "https://ssstore.com.ar/productos/router-wifi-huaweii-ax2s-ws700v2/"},
+            {"titulo": "Cable Starlink USB-C", "link": "https://ssstore.com.ar/productos/cable-starlink-mini-usb-c-a-fuente-portatil-usa-tu-antena-con-power-bank-n9thq/"}
+        ]
+    },
+    "MOVILIDAD": {
+        "keywords": ["samsung", "iphone", "motorola", "celular", "xiaomi", "smartphone", "apple", "android"],
+        "items": [
+            {"titulo": "Cable Foxbox 100W", "link": "https://ssstore.com.ar/productos/cable-foxbox-pixel-100w-con-display-lcd-usb-c-a-usb-c-egdem/"},
+            {"titulo": "Cargador Auto QC 3.0", "link": "https://ssstore.com.ar/productos/cargador-de-auto-foxbox-way-qc-3-0-30w-carga-rapida-qualcomm-rfgoa/"}
+        ]
+    },
+    "HOGAR": {
+        "keywords": ["tv", "smart", "televisor", "google", "android tv", "4k", "led", "ups", "casa"],
+        "items": [
+            {"titulo": "UPS Marsriva KP2", "link": "https://ssstore.com.ar/productos/ups-marsriva-kp2-ultra-16000mah-5v-12v-bivolt/"},
+            {"titulo": "Freidora Aire Foxbox", "link": "https://ssstore.com.ar/productos/freidora-de-aire-foxbox-aeris-6l-digital-1500w-sin-aceite-yufou/"}
+        ]
+    }
 }
 
-def cargar_configuracion():
-    if os.path.exists(FILE_CONFIG):
-        with open(FILE_CONFIG, "r") as f:
-            return json.load(f)
-    return DEFAULT_CONFIG
-
-def guardar_configuracion(config):
-    with open(FILE_CONFIG, "w") as f:
-        json.dump(config, f)
-
-def detectar_perfil(nombre_prod):
-    nombre_lower = str(nombre_prod).lower()
-    config = cargar_configuracion()
-    
-    perfil_elegido = "HOGAR"
-    for perfil, data in config.items():
-        for k in data['keywords']:
-            if k in nombre_lower:
-                return perfil
-    return perfil_elegido
-
 # ==========================================
-# 📧 4. GESTOR DE CORREOS
+# 📨 FUNCIONES DE CORREO
 # ==========================================
+def enviar_correo(destinatario, asunto, cuerpo_html):
+    msg = MIMEMultipart()
+    msg['From'] = SMTP_USER
+    msg['To'] = destinatario
+    msg['Subject'] = asunto
+    msg.attach(MIMEText(cuerpo_html, 'html'))
 
-def generar_html_correo(nombre_cliente, escenario, datos_extra={}):
-    id_visual = datos_extra.get('id_visual', 'S/N')
-    link_ws_general = f"https://wa.me/{NUMERO_WHATSAPP}"
-    link_ws_comprobante = f"https://wa.me/{NUMERO_WHATSAPP}?text={urllib.parse.quote(f'Hola, envío diferencia pedido #{id_visual}')}"
-    
-    html_cross = ""
-    nombre_prod_base = datos_extra.get('nombre_producto_base', '')
-    
-    if nombre_prod_base:
-        perfil = detectar_perfil(nombre_prod_base)
-        config = cargar_configuracion()
-        categoria_data = config.get(perfil, config["HOGAR"])
-        items = categoria_data["items"]
-        
-        if items:
-            filas = ""
-            for item in items[:3]:
-                p_venta = item.get('precio_venta', 0)
-                p_lista = item.get('precio_lista', 0)
-                
-                if p_lista > p_venta:
-                    pct_off = int((1 - (p_venta / p_lista)) * 100)
-                    bloque_precio = f"""
-                        <p style="color:#999;font-size:11px;text-decoration:line-through;margin:0;">${p_lista:,.0f}</p>
-                        <p style="color:#28a745;font-weight:bold;font-size:14px;margin:0;">
-                            ${p_venta:,.0f} <span style="background:#dc3545;color:white;padding:1px 3px;border-radius:3px;font-size:10px;">{pct_off}% OFF</span>
-                        </p>
-                    """
-                else:
-                    bloque_precio = f"""<p style="color:#28a745;font-weight:bold;margin:0;">${p_venta:,.0f}</p>"""
-
-                filas += f"""
-                <td style="width:33%;padding:10px;text-align:center;border:1px solid #f0f0f0;border-radius:8px;background:#fff;">
-                    <a href="{item['link']}" style="text-decoration:none;color:#333;display:block;">
-                        <img src="{item['foto']}" style="width:100%;max-width:120px;height:120px;object-fit:contain;margin-bottom:10px;">
-                        <p style="font-size:12px;margin:0 0 5px;height:32px;overflow:hidden;line-height:1.2;"><strong>{item['nombre']}</strong></p>
-                        {bloque_precio}
-                        <div style="background:#007bff;color:white;padding:5px 10px;border-radius:4px;font-size:11px;margin-top:5px;display:inline-block;">VER OFERTA</div>
-                    </a>
-                </td>
-                """
-            html_cross = f"""
-            <div style="background-color:#f8f9fa;padding:15px;border-radius:8px;margin-top:25px;border:1px solid #e9ecef;">
-                <h3 style="text-align:center;color:#495057;margin-top:0;font-size:16px;">🔥 Recomendados para vos ({perfil})</h3>
-                <table width="100%" cellpadding="0" cellspacing="5" style="border-collapse:separate;">
-                    <tr>{filas}</tr>
-                </table>
-            </div>
-            """
-
-    html_footer = f"""
-        <p style="border-top: 1px solid #eee; padding-top: 20px; margin-top: 30px; font-size: 13px; color: #777; text-align: center;">
-            ¿Tenés dudas? <a href="{link_ws_general}" style="color: #007bff; text-decoration: none; font-weight: bold;">Escribinos por WhatsApp</a>
-        </p>
-    """
-
-    cuerpo = ""
-    asunto = ""
-
-    if escenario == 1: # RECHAZO
-        asunto = f"Información sobre tu pedido #{id_visual}"
-        cuerpo = f"""
-            <p>Hola <strong>{nombre_cliente}</strong>,</p>
-            <p>Te contactamos para informarte sobre el pedido <strong>#{id_visual}</strong> que realizaste en nuestra tienda.</p>
-            <p>Al procesar la solicitud, el sistema de validación administrativa no ha podido aprobar la financiación solicitada. Por este motivo, <strong>el pedido ha sido cancelado en el sistema.</strong></p>
-            <p><strong>¡Pero podés tener tus productos igual!</strong> 🛒<br>
-            Te invitamos a ingresar nuevamente a nuestra tienda online y realizar la compra utilizando los medios de pago directos habilitados:</p>
-            <ul><li>Tarjeta de Crédito o Débito.</li><li>Transferencia Bancaria.</li></ul>
-            <p>Esperamos tu nueva orden para prepararla cuanto antes.</p>
-            <p>¡Saludos!<br><strong>Equipo SSServicios</strong></p>
-        """
-    elif escenario == 2: # DIFERENCIA
-        cupo = datos_extra.get('cupo', 0)
-        dif = datos_extra.get('diferencia', 0)
-        asunto = f"Acción requerida: Finalizá tu pedido #{id_visual}"
-        cuerpo = f"""
-            <p>Hola <strong>{nombre_cliente}</strong>,</p>
-            <p><strong>¡Buenas noticias!</strong> Tu solicitud de financiación fue aprobada parcialmente.</p>
-            <p>Te contamos que tu límite disponible cubre una gran parte del total, por lo que <strong>solo necesitás abonar la diferencia para que podamos despachar tu pedido.</strong></p>
-            <div style="background: #f0f8ff; padding: 20px; border-radius: 8px; border-left: 5px solid #007bff; margin: 20px 0;">
-                <h3 style="margin-top:0; color: #0056b3;">📉 Resumen de Financiación:</h3>
-                <p style="margin:5px 0;">✅ Cubierto por cupo: <strong>${cupo:,.0f}</strong></p>
-                <p style="margin:5px 0; font-size: 18px; color: #d9534f;">👉 <strong>Resta abonar: ${dif:,.0f}</strong></p>
-            </div>
-            <p><strong>⏳ ¿Cómo seguimos?</strong><br>Para liberar el pedido, transferí la diferencia a:</p>
-            <p style="background:#f9f9f9; padding:15px; border:1px dashed #ccc;">
-            <strong>Banco BBVA</strong><br>CBU: 0170272120000001018527<br>Alias: SSSERVICIOS.MP</p>
-            <p style="text-align: center; margin-top: 25px;">
-                <a href="{link_ws_comprobante}" style="background: #25D366; color: white; padding: 12px 25px; text-decoration: none; border-radius: 5px; font-weight: bold; font-size: 14px;">👉 ENVIAR COMPROBANTE POR WHATSAPP</a>
-            </p>
-        """
-    elif escenario == 3: # APROBADO
-        asunto = f"¡Aprobado! Tu pedido #{id_visual} está en camino ✅"
-        cuerpo = f"""
-            <p>Hola <strong>{nombre_cliente}</strong>,</p>
-            <p>Confirmamos que la financiación de tu pedido <strong>#{id_visual}</strong> fue <strong>APROBADA CORRECTAMENTE</strong>.</p>
-            <p>El importe total se verá reflejado en tu próxima factura en <strong>3 cuotas sin interés</strong>.</p>
-            <p>Ya estamos preparando tu paquete. Te avisaremos apenas salga a despacho.</p>
-            <p>¡Gracias por elegirnos!</p>
-        """
-
-    html_final = f"""<div style="font-family:Arial,sans-serif;color:#333;line-height:1.5;max-width:600px;margin:auto;border:1px solid #eee;padding:20px;border-radius:8px;">{cuerpo}{html_cross}{html_footer}</div>"""
-    return asunto, html_final
-
-def enviar_notificacion(email, nombre, escenario, datos_extra={}):
-    asunto, html = generar_html_correo(nombre, escenario, datos_extra)
     try:
-        msg = MIMEMultipart()
-        msg['From'] = st.secrets["email"]["smtp_user"]
-        msg['To'] = email
-        msg['Subject'] = asunto
-        msg.attach(MIMEText(html, 'html'))
-        server = smtplib.SMTP(st.secrets["email"]["smtp_server"], st.secrets["email"]["smtp_port"])
+        server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
         server.starttls()
-        server.login(st.secrets["email"]["smtp_user"], st.secrets["email"]["smtp_password"])
-        server.sendmail(st.secrets["email"]["smtp_user"], email, msg.as_string())
+        server.login(SMTP_USER, SMTP_PASS)
+        server.sendmail(SMTP_USER, destinatario, msg.as_string())
         server.quit()
         return True
     except Exception as e:
-        st.error(f"Error SMTP: {e}")
+        st.error(f"Error enviando correo: {e}")
         return False
 
-# ==========================================
-# 🚀 5. UI PRINCIPAL
-# ==========================================
-st.set_page_config(page_title="Gestor SSServicios", page_icon="🤖", layout="wide")
-st.title("🤖 Gestor de Cobranzas")
-
-# === SIDEBAR ===
-st.sidebar.header("🔎 Consulta Manual")
-id_m = st.sidebar.text_input("ID Cliente")
-if st.sidebar.button("Consultar"):
-    if not id_m: st.sidebar.warning("Poné un ID")
-    else:
-        with st.spinner("Consultando..."):
-            res = consultar_api_aria_id(id_m)
-            if res and res[0].get('cliente_id'):
-                c = res[0]
-                with st.sidebar.expander("Datos Crudos"): st.json(c)
-                
-                # --- CORRECCIÓN MANUAL: Respetar API si existe ---
-                cupo = safe_float(c.get('clienteScoringFinanciable'))
-                origen = "API (Real)"
-                
-                st.sidebar.success(f"{c.get('cliente_nombre')} {c.get('cliente_apellido')}")
-                st.sidebar.metric("Cupo", f"${cupo:,.0f}", help=origen)
-                
-                meses = int(c.get('cliente_meses_atraso', 0) or 0)
-                if meses > 0: st.sidebar.warning(f"⚠️ Mora: {meses} meses (Cupo habilitado)")
-                else: st.sidebar.info("Al día")
-            else: 
-                # Si consultan manual y no existe, avisamos
-                st.sidebar.warning("⚠️ Cliente no encontrado en BD.")
-                st.sidebar.metric("Cupo Respaldo", f"${CUPOS_POR_CATEGORIA['DEFAULT']:,.0f}")
-
-if st.sidebar.button("🔄 Actualizar Todo (Recargar)"): st.rerun()
-
-# === CARGA INICIAL DE PEDIDOS ===
-with st.spinner("⏳ Sincronizando pedidos con Tiendanube..."):
-    pedidos_open = obtener_pedidos("open")
-
-# === PESTAÑAS ===
-tabs = st.tabs(["📥 NUEVOS", "⏳ PENDIENTES", "⚙️ CONFIGURAR RECOMENDADOS", "✅ APROBADOS", "🚫 CANCELADOS"])
-
-# --- TAB 1: NUEVOS ---
-with tabs[0]:
-    nuevos = [p for p in pedidos_open if p['payment_status']=='pending' and TAG_PENDIENTE not in (p.get('owner_note') or "") and TAG_APROBADO not in (p.get('owner_note') or "")]
+def generar_html_cross_selling(orden):
+    """Analiza productos comprados e inyecta recomendaciones"""
+    productos_comprados = " ".join([p['name'].lower() for p in orden['products']]).lower()
+    recomendaciones = []
     
-    if not nuevos: 
-        st.info("✅ No hay pedidos nuevos para analizar.")
-    else:
-        st.write(f"Encontrados: {len(nuevos)} pedidos nuevos.")
-        for p in nuevos:
-            oid = p['id']
-            nom = p['customer']['name']
-            total = float(p['total'])
-            nota = p.get('owner_note') or ""
-            prod_nom = p['products'][0]['name'] if p['products'] else ""
-            
-            with st.expander(f"🆕 #{p.get('number')} | {nom} | ${total:,.0f}"):
-                if st.button("🔍 Analizar Cliente", key=f"a_{oid}"): st.session_state[f"analizar_{oid}"] = True
-                
-                if st.session_state.get(f"analizar_{oid}"):
-                    st.markdown("---")
-                    cli, msg = None, "No encontrado"
-                    ids_nota = re.findall(r'\b\d{3,7}\b', str(nota))
-                    for pid in ids_nota:
-                        r = consultar_api_aria_id(pid)
-                        if r and r[0].get('cliente_id'): cli, msg = r[0], f"ID {pid}"; break
-                    
-                    if not cli:
-                        dni = solo_numeros(p['customer'].get('identification'))
-                        if len(dni) > 5:
-                            r = consultar_api_aria({'ident': dni})
-                            if r: cli, msg = r[0], f"DNI {dni}"
-                    
-                    # --- LÓGICA DE DECISIÓN CRÍTICA (CORREGIDA - TOLERANCIA MORA) ---
-                    if not cli:
-                        # CASO 1: NO EXISTE EN ARIA -> MODO RESPALDO
-                        st.warning("⚠️ Cliente no encontrado en BD. Usando perfil Respaldo.")
-                        cupo = CUPOS_POR_CATEGORIA["DEFAULT"]
-                        origen = "Respaldo (Cliente Nuevo/No encontrado)"
-                        meses = 0 
-                    else:
-                        # CASO 2: SI EXISTE -> RESPETAR API (Billetera mata Mora)
-                        cupo = safe_float(cli.get('clienteScoringFinanciable'))
-                        origen = "API (Aria)"
-                        meses = int(cli.get('cliente_meses_atraso', 0) or 0)
-                        st.success(f"Encontrado por {msg}")
-
-                    dif = total - cupo
-                    col1, col2, col3 = st.columns(3)
-                    col1.metric("Cupo", f"${cupo:,.0f}", help=origen)
-                    col2.metric("Pedido", f"${total:,.0f}")
-                    col3.metric("Mora", f"{meses}m")
-                    
-                    if meses > 0 and cupo > 0:
-                        st.warning(f"⚠️ Cliente con mora técnica ({meses}m), pero tiene Cupo. Se permite operar.")
-
-                    # --- LÓGICA DE ESCENARIOS (DEFINITIVA) ---
-                    esc = 0
-                    
-                    # PRIORIDAD 1: Si no hay cupo, es RECHAZO (sin importar la mora)
-                    if cupo == 0:
-                        esc = 1 # RECHAZO (Sin Cupo / Mora Grave que anuló el cupo)
-                    
-                    # PRIORIDAD 2: Si hay cupo, se aprueba o se pide diferencia
-                    elif total <= cupo:
-                        esc = 3 # APROBADO (Alcanza el cupo)
-                    else:
-                        esc = 2 # DIFERENCIA (Hay cupo pero falta)
-                    
-                    subj, html = generar_html_correo(nom, esc, {'cupo':cupo, 'diferencia':dif, 'id_visual':p.get('number'), 'nombre_producto_base': prod_nom})
-                    with st.expander("👁️ Ver Preview Email"): components.html(html, height=450, scrolling=True)
-                    
-                    if esc == 1:
-                        st.error("⛔ Rechazo (Cupo $0)")
-                        if st.button("Rechazar y Cancelar", key=f"b1_{oid}"):
-                            tn_action(oid, "cancel")
-                            enviar_notificacion(p['customer']['email'], nom, 1, {'id_visual':p.get('number')})
-                            st.toast("Cancelado."); time.sleep(2); st.rerun()
-                    elif esc == 2:
-                        st.warning("⚠️ Cupo Parcial")
-                        if st.button("Solicitar Diferencia", key=f"b2_{oid}"):
-                            tn_action(oid, "update_note", f"{nota} {TAG_PENDIENTE}")
-                            enviar_notificacion(p['customer']['email'], nom, 2, {'cupo':cupo, 'diferencia':dif, 'id_visual':p.get('number')})
-                            st.toast("Mail enviado."); time.sleep(2); st.rerun()
-                    elif esc == 3:
-                        st.success("🚀 Aprobable")
-                        if st.button("Aprobar", key=f"b3_{oid}"):
-                            tn_action(oid, "approve", f"{nota} {TAG_APROBADO}")
-                            enviar_notificacion(p['customer']['email'], nom, 3, {'id_visual':p.get('number')})
-                            st.balloons(); time.sleep(2); st.rerun()
-
-# --- TAB 2: PENDIENTES ---
-with tabs[1]:
-    pends = [p for p in pedidos_open if TAG_PENDIENTE in (p.get('owner_note') or "")]
-    if not pends: st.info("✅ No hay pedidos pendientes de diferencia.")
-    else:
-        st.write(f"Esperando diferencia de: {len(pends)} pedidos.")
-        for p in pends:
-            prod_nom = p['products'][0]['name'] if p['products'] else ""
-            with st.expander(f"⏳ #{p.get('number')} | {p['customer']['name']} | ${float(p['total']):,.0f}"):
-                 col_ok, col_x = st.columns(2)
-                 if col_ok.button("✅ Confirmar Pago Manual", key=f"ok_{p['id']}"):
-                     tn_action(p['id'], "approve", f"{p.get('owner_note')} {TAG_APROBADO}")
-                     enviar_notificacion(p['customer']['email'], p['customer']['name'], 3, {'id_visual':p.get('number'), 'nombre_producto_base': prod_nom})
-                     st.success("Aprobado y Mail Enviado"); time.sleep(2); st.rerun()
-                 if col_x.button("🚫 Cancelar", key=f"cx_{p['id']}"):
-                     tn_action(p['id'], "cancel")
-                     st.error("Cancelado"); time.sleep(2); st.rerun()
-
-# --- TAB 3: CONFIGURADOR ---
-with tabs[2]:
-    st.header("🛒 Panel de Recomendados")
-    st.info("💡 El robot detecta automáticamente las ofertas (Precio Lista vs Precio Promo) desde Tiendanube.")
+    for categoria, datos in PERFILES_INTERES.items():
+        if any(kw in productos_comprados for kw in datos['keywords']):
+            recomendaciones.extend(datos['items'])
+            break # Solo una categoría para no saturar
     
-    config_actual = cargar_configuracion()
-    
-    if st.button("🔄 Recargar Catálogo de Tiendanube"):
-        catalogo = get_catalogo_tn_filtrado()
-        if not catalogo: st.warning("Error o catálogo vacío.")
-        else:
-            st.session_state['catalogo_tn'] = catalogo
-            st.success(f"Cargados {len(catalogo)} productos.")
+    if not recomendaciones:
+        return ""
 
-    catalogo = st.session_state.get('catalogo_tn', [])
+    html_items = ""
+    for item in recomendaciones[:2]: # Máximo 2 items
+        html_items += f"""
+        <li><a href="{item['link']}" style="color: #d35400; text-decoration: none;">👉 {item['titulo']}</a></li>
+        """
     
-    if catalogo:
-        opciones = {p['nombre']: p for p in catalogo}
-        nombres = list(opciones.keys())
-        col_a, col_b = st.columns(2)
-        categorias = ["GAMING", "CONECTIVIDAD", "MOVILIDAD", "HOGAR"]
+    return f"""
+    <div style="background-color: #fff3e0; padding: 10px; border: 1px dashed #ef6c00; margin-top: 15px;">
+        <p style="margin:0; font-weight:bold; color: #ef6c00;">¡Completa tu experiencia!</p>
+        <ul style="margin-top:5px; padding-left: 20px;">{html_items}</ul>
+    </div>
+    """
+
+def enviar_mail_solicitar_comprobante(orden):
+    nombre = orden['billing_name'].split()[0]
+    email = orden['customer']['email']
+    cross_selling = generar_html_cross_selling(orden)
+    
+    asunto = f"Hola {nombre} - Esperamos tu comprobante (Pedido #{orden['id']})"
+    cuerpo = f"""
+    <html><body>
+        <h3>¡Hola {nombre}! 👋</h3>
+        <p>Gracias por tu compra en SSServicios. Hemos recibido tu pedido <strong>#{orden['id']}</strong>.</p>
         
-        for i, perfil in enumerate(categorias):
-            with (col_a if i % 2 == 0 else col_b):
-                st.subheader(f"📂 {perfil}")
-                
-                items_guardados = config_actual.get(perfil, {}).get("items", [])
-                defaults = [x['nombre'] for x in items_guardados if x['nombre'] in nombres]
-                seleccion = st.multiselect(f"Productos {perfil}:", options=nombres, default=defaults, max_selections=3, key=f"sel_{perfil}")
-                
-                if st.button(f"Guardar {perfil}", key=f"save_{perfil}"):
-                    nuevos = []
-                    for nom in seleccion:
-                        d = opciones[nom]
-                        nuevos.append({
-                            "nombre":d['nombre'], 
-                            "link":d['link'], 
-                            "foto":d['foto'], 
-                            "precio_venta":d['precio_venta'],
-                            "precio_lista":d['precio_lista']
-                        })
-                    
-                    config_actual[perfil]["items"] = nuevos
-                    guardar_configuracion(config_actual)
-                    st.success("Guardado!")
-                
-                if items_guardados:
-                    c1, c2, c3 = st.columns(3)
-                    for j, item in enumerate(items_guardados[:3]):
-                        with [c1, c2, c3][j]:
-                            st.image(item['foto'], width=60)
-                            p_v = item.get('precio_venta', 0)
-                            p_l = item.get('precio_lista', 0)
-                            
-                            if p_l > p_v:
-                                pct = int((1 - (p_v/p_l)) * 100)
-                                st.caption(f"~~${p_l:,.0f}~~")
-                                st.markdown(f"**${p_v:,.0f}** :red[{pct}% OFF]")
-                            else:
-                                st.markdown(f"**${p_v:,.0f}**")
-                st.markdown("---")
+        <div style="background-color: #e3f2fd; padding: 15px; border-left: 4px solid #2196F3; margin: 10px 0;">
+            <strong>🏦 Pago por Transferencia/Depósito</strong><br>
+            El total es: <strong>${orden['total']}</strong>.<br><br>
+            Para procesar el envío, por favor <strong>responde a este correo adjuntando el comprobante de pago</strong>.
+        </div>
+        
+        {cross_selling}
+        
+        <p>Saludos,<br>Equipo SSServicios</p>
+    </body></html>
+    """
+    return enviar_correo(email, asunto, cuerpo)
 
-# --- OTRAS TABS ---
-with tabs[3]: st.write("Historial Aprobados...") 
-with tabs[4]: st.write("Historial Cancelados...")
+# ==========================================
+# 🌐 FUNCIONES API (TN & ARIA)
+# ==========================================
+def get_ordenes():
+    # Traemos 'open' (A convenir)
+    url = f"{TN_URL}/orders?status=open&per_page=20" 
+    try:
+        r = requests.get(url, headers=HEADERS_TN)
+        return r.json()
+    except:
+        return []
+
+def agregar_nota_tn(order_id, nota):
+    url = f"{TN_URL}/orders/{order_id}"
+    data = {"note": nota}
+    requests.put(url, json=data, headers=HEADERS_TN)
+
+def buscar_cliente_aria(dato):
+    # Mockup para simular Aria (Reemplazar con llamada real si tienes el endpoint exacto)
+    # Aquí deberías poner tu lógica de requests.get(ARIA...)
+    # Retorno simulado para pruebas:
+    if "Juan" in dato: return {"id": 123, "nombre": "Juan Perez", "cupo": 100000, "mora": 0}
+    return None
+
+# ==========================================
+# 🖥️ INTERFAZ PRINCIPAL
+# ==========================================
+st.title("🤖 Gestor de Cobranzas & Transferencias")
+st.markdown("---")
+
+if st.button("🔄 Actualizar Pedidos"):
+    st.rerun()
+
+pedidos = get_ordenes()
+
+if not pedidos:
+    st.info("No hay pedidos pendientes en estado 'Open'.")
+else:
+    st.success(f"Se encontraron {len(pedidos)} pedidos para procesar.")
+
+    for orden in pedidos:
+        # Filtros de seguridad (para no procesar lo ya procesado)
+        nota_interna = orden.get('note') or ""
+        if TAG_APROBADO in nota_interna or TAG_ESPERA_COMPROBANTE in nota_interna:
+            continue
+
+        # Detección de Tipo de Pago
+        gateway = orden.get('payment_details', {}).get('method', '').lower()
+        es_transferencia = any(x in gateway for x in ['transferencia', 'depósito', 'bancaria', 'cuenta'])
+        
+        titulo = f"#{orden['id']} | {orden['billing_name']} | ${orden['total']}"
+        icono = "🏦" if es_transferencia else "💳"
+        
+        with st.expander(f"{icono} {titulo} ({gateway})", expanded=True):
+            
+            # ---------------------------------------------------------
+            # CAMINO A: ES TRANSFERENCIA (SOLO PEDIR COMPROBANTE)
+            # ---------------------------------------------------------
+            if es_transferencia:
+                st.info("ℹ️ Pedido mediante Transferencia Bancaria. No requiere análisis crediticio.")
+                
+                col1, col2 = st.columns([3, 1])
+                with col1:
+                    st.write("**Acción:** Enviar correo solicitando el comprobante de pago.")
+                    st.caption("Al enviar, se marcará el pedido con la nota #ESPERANDO_COMPROBANTE en Tiendanube.")
+                
+                with col2:
+                    if st.button("✉️ Pedir Comprobante", key=f"btn_tr_{orden['id']}"):
+                        with st.spinner("Enviando correo..."):
+                            if enviar_mail_solicitar_comprobante(orden):
+                                agregar_nota_tn(orden['id'], f"{nota_interna} {TAG_ESPERA_COMPROBANTE}")
+                                st.toast("✅ Correo enviado y pedido actualizado!")
+                                time.sleep(1)
+                                st.rerun()
+                            else:
+                                st.error("Falló el envío del correo.")
+
+            # ---------------------------------------------------------
+            # CAMINO B: ES CRÉDITO (TU LÓGICA DE ANÁLISIS)
+            # ---------------------------------------------------------
+            else:
+                if st.button("🔍 Analizar Cliente (Aria)", key=f"btn_cr_{orden['id']}"):
+                    st.session_state['analisis_activo'][orden['id']] = True
+
+                if st.session_state['analisis_activo'].get(orden['id']):
+                    st.markdown("#### 📊 Análisis Financiero")
+                    
+                    # 1. Buscar Cliente
+                    cliente_aria = buscar_cliente_aria(orden['billing_name']) # O usar DNI/ID
+                    
+                    if not cliente_aria:
+                        st.warning("⚠️ Cliente no encontrado en Base de Datos Aria.")
+                        st.stop() # O lógica de respaldo
+                    
+                    # 2. Mostrar Datos
+                    c1, c2, c3 = st.columns(3)
+                    c1.metric("Cupo Disponible", f"${cliente_aria['cupo']}")
+                    c2.metric("Total Pedido", f"${orden['total']}")
+                    c3.metric("Mora", f"{cliente_aria['mora']} días", delta_color="inverse")
+
+                    # 3. Lógica de Decisión
+                    total_pedido = float(orden['total'])
+                    cupo = float(cliente_aria['cupo'])
+                    
+                    if cliente_aria['mora'] > 0:
+                        st.error("🚫 Cliente con Mora. Se recomienda rechazar.")
+                        if st.button("Enviar Rechazo por Mora", key=f"rej_{orden['id']}"):
+                            st.write("Enviando rechazo...") # Tu funcion de rechazo
+                    
+                    elif cupo >= total_pedido:
+                        st.success("✅ Cupo Suficiente. Aprobable.")
+                        if st.button("Aprobar Pedido", key=f"apr_{orden['id']}"):
+                            agregar_nota_tn(orden['id'], f"{nota_interna} {TAG_APROBADO}")
+                            # enviar_mail_aprobado(orden)...
+                            st.success("Pedido Aprobado")
+                            st.rerun()
+                    else:
+                        diferencia = total_pedido - cupo
+                        st.warning(f"⚠️ Cupo Insuficiente. Faltan ${diferencia}.")
+                        if st.button(f"Solicitar Diferencia (${diferencia})", key=f"dif_{orden['id']}"):
+                             st.write("Solicitando diferencia...") # Tu funcion de diferencia
