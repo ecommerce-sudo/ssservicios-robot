@@ -26,17 +26,15 @@ ARIA_URL_BASE = "https://api.anatod.ar/api"
 NUMERO_WHATSAPP = "5492966840059"
 FILE_CONFIG = "recomendados.json"
 
-# ETIQUETAS
+# ETIQUETAS INTERNAS
 TAG_PENDIENTE = "#PENDIENTE_PAGO"
 TAG_APROBADO = "#APROBADO"
-
-# (ELIMINADO: CUPOS_POR_CATEGORIA 'DEFAULT' YA NO SE USA PARA CLIENTES EXTERNOS)
 
 if 'analisis_activo' not in st.session_state:
     st.session_state['analisis_activo'] = {}
 
 # ==========================================
-# 🔌 2. FUNCIONES DE CONEXIÓN Y UTILIDADES
+# 🔌 2. FUNCIONES DE CONEXIÓN
 # ==========================================
 
 def safe_float(value):
@@ -340,15 +338,13 @@ if st.sidebar.button("Consultar"):
                 if meses > 0: st.sidebar.warning(f"⚠️ Mora: {meses} meses (Cupo habilitado)")
                 else: st.sidebar.info("Al día")
             else: 
-                # NUEVA LÓGICA MANUAL: CLIENTE EXTERNO
-                st.info("🌍 Cliente Externo (No encontrado en ARIA).")
-                st.caption("Es probable que sea de otra provincia. Verificar pago por Transferencia o Tarjeta.")
+                st.info("🌍 Cliente Externo (No registrado en ARIA).")
+                st.caption("Verificar manualmente si corresponde a una venta con Tarjeta o Transferencia desde otra provincia.")
 
 if st.sidebar.button("🔄 Actualizar Todo (Recargar)"): st.rerun()
 
 # === CARGA INICIAL DE PEDIDOS ===
 with st.spinner("⏳ Sincronizando pedidos con Tiendanube..."):
-    # Traemos todos los pedidos abiertos
     pedidos_open = obtener_pedidos("open")
 
 # === PESTAÑAS ===
@@ -378,37 +374,35 @@ with tabs[0]:
             prod_nom = p['products'][0]['name'] if p['products'] else ""
             
             # --- DETECCIÓN INTELIGENTE DE PAGO ---
-            gateway = p.get('gateway', '').lower()
-            payment_title = p.get('payment_details', {}).get('title', '') or p.get('gateway_name', '') or ""
-            payment_title_lower = payment_title.lower()
-
-            # Lógica semántica de clasificación
-            es_transferencia = 'transfer' in payment_title_lower or 'depó' in payment_title_lower or 'wire' in gateway
-            es_convenir = 'convenir' in payment_title_lower or 'acordar' in payment_title_lower
+            gateway = str(p.get('gateway', '')).lower()
+            payment_title = str(p.get('payment_details', {}).get('title', '')).lower()
+            gateway_name = str(p.get('gateway_name', '')).lower()
             
-            # Construcción del título
-            if es_transferencia:
-                titulo_expander = f"🏦 Transferencia | #{p.get('number')} | {nom} | ${total:,.0f}"
-            elif es_convenir:
-                titulo_expander = f"🤝 A Convenir (Crédito) | #{p.get('number')} | {nom} | ${total:,.0f}"
+            # Unimos todo en un string para buscar palabras clave
+            texto_pago = f"{gateway} {payment_title} {gateway_name}"
+
+            # LÓGICA DE PRIORIDAD
+            es_convenir = 'convenir' in texto_pago or 'acordar' in texto_pago
+            
+            es_transferencia = False
+            if not es_convenir:
+                es_transferencia = 'transfer' in texto_pago or 'depó' in texto_pago or 'wire' in texto_pago
+
+            es_tarjeta = not (es_convenir or es_transferencia)
+            
+            # TITULOS
+            if es_convenir:
+                titulo = f"🤝 A Convenir (Crédito) | #{p.get('number')} | {nom} | ${total:,.0f}"
+            elif es_transferencia:
+                titulo = f"🏦 Transferencia | #{p.get('number')} | {nom} | ${total:,.0f}"
             else:
-                titulo_expander = f"💳 Tarjeta/Otro | #{p.get('number')} | {nom} | ${total:,.0f}"
+                titulo = f"💳 Tarjeta/Pasarela | #{p.get('number')} | {nom} | ${total:,.0f}"
 
-            with st.expander(titulo_expander):
+            with st.expander(titulo):
                 
-                # === CASO A: TRANSFERENCIA ===
-                if es_transferencia:
-                    st.info("ℹ️ Pago por Transferencia Pendiente.")
-                    msg_ws = f"Hola {nom}, gracias por tu compra #{p.get('number')}. Para procesar el envío necesitamos que nos envíes el comprobante de transferencia por este medio. ¡Gracias!"
-                    phone_clean = solo_numeros(p['customer'].get('phone', ''))
-                    if not phone_clean: phone_clean = "" 
-                    
-                    st.link_button("📲 Pedir Comprobante por WhatsApp", generar_link_ws(phone_clean, msg_ws))
-                    st.caption("Si ya pagó, podés aprobarlo manualmente en TN o esperar que impacte.")
-
-                # === CASO B: A CONVENIR (Crédito) ===
-                elif es_convenir:
-                    st.info("ℹ️ Solicitud de Crédito (A Convenir). Analizar Cupo.")
+                # === CASO 1: CRÉDITO (A CONVENIR) ===
+                if es_convenir:
+                    st.info("ℹ️ Solicitud de Crédito (A Convenir). Requiere Análisis.")
                     
                     if st.button("🔍 Analizar Cliente (Cupo)", key=f"a_{oid}"): st.session_state[f"analizar_{oid}"] = True
                     
@@ -426,24 +420,20 @@ with tabs[0]:
                                 r = consultar_api_aria({'ident': dni})
                                 if r: cli, msg = r[0], f"DNI {dni}"
                         
-                        # --- LÓGICA CORREGIDA: CLIENTE EXTERNO ---
+                        # -> CLIENTE EXTERNO
                         if not cli:
                             st.info("🌍 Cliente Externo (No registrado en ARIA).")
-                            st.write("**Estado:** No aplica financiación automática (Sistema de Créditos).")
-                            st.write(f"**Medio de Pago declarado:** {payment_title}")
-                            st.caption("Verificar manualmente si corresponde a una venta con Tarjeta o Transferencia desde otra provincia.")
+                            st.caption("Verificar manualmente si es una venta externa.")
                             
-                            col_man_1, col_man_2 = st.columns(2)
-                            if col_man_1.button("✅ Aprobar Manualmente", key=f"ok_man_{oid}"):
+                            c_m1, c_m2 = st.columns(2)
+                            if c_m1.button("✅ Aprobar Manual", key=f"ok_man_{oid}"):
                                 tn_action(oid, "approve", f"{nota} {TAG_APROBADO}")
                                 st.success("Aprobado manual."); time.sleep(1); st.rerun()
-                            
-                            if col_man_2.button("🚫 Cancelar Pedido", key=f"cx_man_{oid}"):
+                            if c_m2.button("🚫 Cancelar", key=f"cx_man_{oid}"):
                                 tn_action(oid, "cancel")
                                 st.error("Cancelado."); time.sleep(1); st.rerun()
-
                         else:
-                            # CLIENTE EXISTE -> LÓGICA ARIA NORMAL
+                            # -> CLIENTE ARIA
                             cupo = safe_float(cli.get('clienteScoringFinanciable'))
                             origen = "API (Aria)"
                             meses = int(cli.get('cliente_meses_atraso', 0) or 0)
@@ -485,14 +475,25 @@ with tabs[0]:
                                     enviar_notificacion(p['customer']['email'], nom, 3, {'id_visual':p.get('number')})
                                     st.balloons(); time.sleep(2); st.rerun()
 
-                # === CASO C: TARJETA/OTRO PENDIENTE ===
-                else:
-                    st.write("Esperando confirmación de la pasarela de pagos...")
-                    if st.button("🔍 Forzar Análisis Manual", key=f"force_{oid}"):
-                         st.session_state[f"analizar_{oid}"] = True 
-                         st.rerun()
+                # === CASO 2: TRANSFERENCIA (Pedir Comprobante) ===
+                elif es_transferencia:
+                    st.info("ℹ️ Pago por Transferencia Pendiente.")
+                    msg_ws = f"Hola {nom}, gracias por tu compra #{p.get('number')}. Para procesar el envío necesitamos que nos envíes el comprobante de transferencia por este medio. ¡Gracias!"
+                    phone_clean = solo_numeros(p['customer'].get('phone', ''))
+                    if not phone_clean: phone_clean = "" 
+                    st.link_button("📲 Pedir Comprobante por WhatsApp", generar_link_ws(phone_clean, msg_ws))
 
-# --- TAB 2: PENDIENTES (Comprobantes y Diferencias) ---
+                # === CASO 3: TARJETA/PASARELA (Listo para despacho) ===
+                elif es_tarjeta:
+                    st.success("✅ Pago con Tarjeta/Pasarela detectado. Listo para despacho.")
+                    st.caption("Si ya ves el pago en MP/Billetera, confirmá acá para archivarlo.")
+                    
+                    if st.button("📦 Confirmar y Archivar (Aprobar)", key=f"card_ok_{oid}"):
+                        tn_action(oid, "approve", f"{nota} {TAG_APROBADO}")
+                        st.balloons()
+                        st.toast("Pedido aprobado y archivado."); time.sleep(2); st.rerun()
+
+# --- TAB 2: PENDIENTES ---
 with tabs[1]:
     st.subheader("⏳ Esperando Diferencia de Pago")
     if not pendientes_dif_lista:
@@ -513,8 +514,6 @@ with tabs[1]:
 # --- TAB 3: CONFIGURADOR ---
 with tabs[2]:
     st.header("🛒 Panel de Recomendados")
-    st.info("💡 El robot detecta automáticamente las ofertas (Precio Lista vs Precio Promo) desde Tiendanube.")
-    
     config_actual = cargar_configuracion()
     
     if st.button("🔄 Recargar Catálogo de Tiendanube"):
@@ -535,7 +534,6 @@ with tabs[2]:
         for i, perfil in enumerate(categorias):
             with (col_a if i % 2 == 0 else col_b):
                 st.subheader(f"📂 {perfil}")
-                
                 items_guardados = config_actual.get(perfil, {}).get("items", [])
                 defaults = [x['nombre'] for x in items_guardados if x['nombre'] in nombres]
                 seleccion = st.multiselect(f"Productos {perfil}:", options=nombres, default=defaults, max_selections=3, key=f"sel_{perfil}")
@@ -545,7 +543,6 @@ with tabs[2]:
                     for nom in seleccion:
                         d = opciones[nom]
                         nuevos.append({"nombre":d['nombre'], "link":d['link'], "foto":d['foto'], "precio_venta":d['precio_venta'], "precio_lista":d['precio_lista']})
-                    
                     config_actual[perfil]["items"] = nuevos
                     guardar_configuracion(config_actual)
                     st.success("Guardado!")
@@ -575,7 +572,6 @@ with tabs[3]:
         for p in aprobados_lista:
             gateway = p.get('gateway', '').lower()
             tipo_pago = "💳 Tarjeta/MP" if not ('wire' in gateway or 'transfer' in gateway) else "🏦 Transferencia"
-            
             with st.expander(f"#{p.get('number')} | {p['customer']['name']} | ${float(p['total']):,.0f} | {tipo_pago}"):
                 st.write(f"**Estado:** {p.get('payment_status').upper()}")
                 st.write(f"**Productos:**")
